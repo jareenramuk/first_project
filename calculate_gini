@@ -15,7 +15,7 @@ def gini(inputDF,actualCol,scoreCol,lbl,wgtCol=None):
     
     inputDF = inputDF.sort_values(by = [scoreCol],ascending = False).reset_index(drop=True)
     inputDF["scrcumwgt"] = inputDF[wgtVar].cumsum()
-    inputDF["scoreBin"] = np.floor((inputDF.srccumwgt)/binSize)+1
+    inputDF["scoreBin"] = np.floor((inputDF.scrcumwgt)/binSize)+1
     
     mergedDF = inputDF[wgtCol].groupby(inputDF["actualBin"],as_index=True).sum().to_frame("count")
     
@@ -33,7 +33,7 @@ def gini(inputDF,actualCol,scoreCol,lbl,wgtCol=None):
     mergedDF["SumAct"] = inputDF["wgtActual"].groupby(inputDF["scoreBin"],as_index=True).sum()
     mergedDF["SumScr"] = inputDF["wgtScore"].groupby(inputDF["scoreBin"],as_index=True).sum() 
     
-    merged.to_csv(lbl+".csv")
+    mergedDF.to_csv(lbl+".csv")
     
     respAUC = np.sum(mergedDF["respCumPct"] - mergedDF["randomLine"])/binCount
     bestAUC = np.sum(mergedDF["bestCumPct"] - mergedDF["randomLine"])/binCount

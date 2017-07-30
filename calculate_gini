@@ -1,0 +1,43 @@
+depVar = 'target'
+keyVar = 'index'
+wgtVar = 'wgt'
+def gini(inputDF,actualCol,scoreCol,lbl,wgtCol=None):
+    if wgtCol is None:
+        wgtCol=1
+    binCount = 20
+    binSize = np.ceil(inputDF.shape[0]/binCount)
+    inputDF["wgtScore"] = inputDF[wgtVar]*inputDF[scoreCol]
+    inputDF["wgtActual"] = inputDF[wgtVar]*inputDF[actualCol]
+    
+    inputDF = inputDF.sort_values(by = [actualCol],ascending = False).reset_index(drop=True)
+    inputDF["actcumwgt"] = inputDF[wgtVar].cumsum()
+    inputDF["actualBin"] = np.floor((inputDF.actcumwgt)/binSize)+1
+    
+    inputDF = inputDF.sort_values(by = [scoreCol],ascending = False).reset_index(drop=True)
+    inputDF["scrcumwgt"] = inputDF[wgtVar].cumsum()
+    inputDF["scoreBin"] = np.floor((inputDF.srccumwgt)/binSize)+1
+    
+    mergedDF = inputDF[wgtCol].groupby(inputDF["actualBin"],as_index=True).sum().to_frame("count")
+    
+    mergedDF["bestMean"] = inputDF["wgtActual"].groupby(inputDF["actualBin"],as_index=True).sum()/mergedDF["count"]
+    mergedDF["respMean"] = inputDF["wgtActual"].groupby(inputDF["scoreBin"],as_index=True).sum()/mergedDF["count"]
+    mergedDF["predMean"] = inputDF["wgtScore"].groupby(inputDF["scoreBin"],as_index=True).sum()/mergedDF["count"]
+    
+    mergedDF["bestPct"] = mergedDF["bestMean"]/mergedDF["bestMean"].sum()
+    mergedDF["respPct"] = mergedDF["respMean"]/mergedDF["respMean"].sum()  
+    
+    mergedDF["bestCumPct"] = mergedDF["bestPct"].cumsum()
+    mergedDF["respCumPct"] = mergedDF["respPct"].cumsum()
+    mergedDF["randomLine"] = mergedDF.index.get_values()/binCount
+    
+    mergedDF["SumAct"] = inputDF["wgtActual"].groupby(inputDF["scoreBin"],as_index=True).sum()
+    mergedDF["SumScr"] = inputDF["wgtScore"].groupby(inputDF["scoreBin"],as_index=True).sum() 
+    
+    merged.to_csv(lbl+".csv")
+    
+    respAUC = np.sum(mergedDF["respCumPct"] - mergedDF["randomLine"])/binCount
+    bestAUC = np.sum(mergedDF["bestCumPct"] - mergedDF["randomLine"])/binCount
+    gini = respAUC/bestAUC
+    
+    accuracy = 1 - np.abs(mergedDF["predMean"] - mergedDF["respMean"]).sum()/mergedDF["respMean"].sum()
+    return ["{0:0.2f}%".format(gini*100),"{0:0.2f}%".format(accuracy*100)]

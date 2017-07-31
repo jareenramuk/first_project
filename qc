@@ -8,6 +8,7 @@ from sklearn.metrics import roc_curve
 
 
 input = pd.read_csv('/Users/sneha_neeraj/Documents/input.csv',low_memory=False)
+input['wgt']=1
 train, test = train_test_split(input, test_size = 0.3)
 #test.info()
 train_nomissing = train.replace('NaN',-999)
@@ -42,6 +43,49 @@ for feature in test.columns: # Loop through all columns in the dataframe
     if test[feature].dtype != 'object': # Only apply for columns with categorical strings
         stats[feature] = test[feature].describe()
 stats.to_csv('/Users/sneha_neeraj/Documents/numeric_test.csv',index=0)
+
+
+from collections import Counter
+
+trial = train[['product','PREMIUM','wgt','target','AGE8']]
+print (trial.columns)
+
+catDF = pd.DataFrame() #creates a new dataframe that's empty
+categorical = pd.DataFrame()
+charDF = pd.DataFrame() #creates a new dataframe that's empty
+character = pd.DataFrame()
+numDF = pd.DataFrame() #creates a new dataframe that's empty
+
+for feature in trial.columns: # Loop through all columns in the dataframe
+    if feature == 'wgt' or feature == 'target':
+        continue
+    print (feature)    
+    categ = True if len(train_nomissing[feature].unique())<20 else False
+    charac = True if (train_nomissing[feature].dtype == 'object') else False
+    if charac:
+        trialDF = train_nomissing.sort_values(by = [feature],ascending = False).reset_index(drop=True)
+        character['target'] = trialDF['target'].groupby(trialDF[feature],as_index=True).sum()
+        character['count'] = trialDF['wgt'].groupby(trialDF[feature],as_index=True).sum()
+        character['varname'] = feature
+        charDF = charDF.append(character, ignore_index = True)
+        
+    elif categ:
+        trialDF = train_nomissing.sort_values(by = [feature],ascending = False).reset_index(drop=True)
+        categorical['target'] = trialDF['target'].groupby(trial[feature],as_index=True).sum()
+        categorical['count'] = trialDF['wgt'].groupby(trial[feature],as_index=True).sum()
+        categorical['varname'] = feature
+        catDF = catDF.append(categorical, ignore_index = True)   
+        
+    else:
+        numDF=numDF.append(lorenz(train,'target',feature,"test",'wgt'),ignore_index=True)
+
+charDF.to_csv("/Users/sneha_neeraj/Documents/char_bin.csv",index=True)
+catDF.to_csv("/Users/sneha_neeraj/Documents/cat_bin.csv",index=True)
+numDF.to_csv("/Users/sneha_neeraj/Documents/cat_bin.csv",index=True)    
+    
+
+
+
 
 depVar = 'target'
 keyVar = 'index'
@@ -137,33 +181,4 @@ def lorenz(inputDF,actualCol,scoreCol,lbl,wgtCol=None):
     mergedDF['variable'] =  scoreCol
     return [mergedDF]
     
-    from collections import Counter
-
-
-
-trial = train[['product','PREMIUM','wgt','target']]
-
-catDF = pd.DataFrame() #creates a new dataframe that's empty
-categorical = pd.DataFrame()
-numDF = pd.DataFrame() #creates a new dataframe that's empty
-outdF = pd.DataFrame()
-
-for feature in trial.columns: # Loop through all columns in the dataframe
-    categ = True if len(trial[feature].unique())==2 else False
-    charac = True if (trial[feature].dtype == 'object') else False
-    cond = True if categ and charac else False
-    print (trial[feature],cond)
-    if cond: 
-        categorical['Unique_Value'] =Counter(trial[feature]).keys()
-        categorical['Count'] =Counter(trial[feature]).values()
-        categorical['varname'] = feature
-        catDF = catDF.append(categorical, ignore_index = True)  
-    else:
-        
-        numDF=numDF.append(lorenz(trial,'target',feature,"test",'wgt'),ignore_index=True)
-        
-
-    
-    
-
-
+ 

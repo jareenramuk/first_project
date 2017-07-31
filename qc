@@ -44,45 +44,45 @@ for feature in test.columns: # Loop through all columns in the dataframe
         stats[feature] = test[feature].describe()
 stats.to_csv('/Users/sneha_neeraj/Documents/numeric_test.csv',index=0)
 
-
 from collections import Counter
-
-trial = train[['product','PREMIUM','wgt','target','AGE8']]
-print (trial.columns)
-
-catDF = pd.DataFrame() #creates a new dataframe that's empty
-categorical = pd.DataFrame()
-charDF = pd.DataFrame() #creates a new dataframe that's empty
-character = pd.DataFrame()
 numDF = pd.DataFrame() #creates a new dataframe that's empty
+charDF = pd.DataFrame() #creates a new dataframe that's empty
+catDF = pd.DataFrame() #creates a new dataframe that's empty
 
-for feature in trial.columns: # Loop through all columns in the dataframe
-    if feature == 'wgt' or feature == 'target':
+for feature in input.columns: # Loop through all columns in the dataframe
+    if feature == 'wgt' or feature == 'target' or feature == 'cnt':
         continue
     print (feature)    
-    categ = True if len(train_nomissing[feature].unique())<20 else False
+    categ = True if 1<len(train_nomissing[feature].unique())<20 else False
+    noskip = True if len(train_nomissing[feature].unique())>1 else False
     charac = True if (train_nomissing[feature].dtype == 'object') else False
     if charac:
+        character = pd.DataFrame()
         trialDF = train_nomissing.sort_values(by = [feature],ascending = False).reset_index(drop=True)
         character['target'] = trialDF['target'].groupby(trialDF[feature],as_index=True).sum()
         character['count'] = trialDF['wgt'].groupby(trialDF[feature],as_index=True).sum()
         character['varname'] = feature
+        character['unique'] = character.index
         charDF = charDF.append(character, ignore_index = True)
         
     elif categ:
+        categorical = pd.DataFrame()
         trialDF = train_nomissing.sort_values(by = [feature],ascending = False).reset_index(drop=True)
-        categorical['target'] = trialDF['target'].groupby(trial[feature],as_index=True).sum()
-        categorical['count'] = trialDF['wgt'].groupby(trial[feature],as_index=True).sum()
+        categorical['target'] = trialDF['target'].groupby(trialDF[feature],as_index=True).sum()
+        categorical['count'] = trialDF['wgt'].groupby(trialDF[feature],as_index=True).sum()
         categorical['varname'] = feature
+        categorical['unique'] = categorical.index
         catDF = catDF.append(categorical, ignore_index = True)   
         
-    else:
+    elif noskip:
         numDF=numDF.append(lorenz(train,'target',feature,"test",'wgt'),ignore_index=True)
 
 charDF.to_csv("/Users/sneha_neeraj/Documents/char_bin.csv",index=True)
 catDF.to_csv("/Users/sneha_neeraj/Documents/cat_bin.csv",index=True)
-numDF.to_csv("/Users/sneha_neeraj/Documents/cat_bin.csv",index=True)    
+numDF.to_csv("/Users/sneha_neeraj/Documents/numeric_bin.csv",index=True)    
     
+
+
 
 
 

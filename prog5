@@ -1,0 +1,260 @@
+* EC PD Model Segmentation Generation Process              					  
+	 Author:      Jingnan Xiao, 2013-12-11                                       
+	 Modified by: Dan Yelle, 2015-06-16										  
+
+	1)	Replace input data libname and dataset name
+	2)	Replace output data path. Be sure that outputDir/ext and outputDir/tgt are created in advance.
+	3)	Set filterstatement macro variable
+	4)	Set the test variable list - vars must be of type=CHAR (do not include Trivial_Test here, this is added automatically).
+			Also, it is recommended to single space delimit the variable list.
+;
+*rsubmit;
+options mprint symbolgen fullstimer obs = max;
+
+
+
+*input data;
+
+libname new '/idn/basel8/dtunali/EC_model_2015/data/QC'; 
+*libname new 'C:\Users\nkuma44\Documents\ERMG\Projects\2015_EC_models\data'; 
+%let dsn_in = comb_data_12_3;*comb_data_12_3; 
+	*comb_data_8 comb_icss_icc_arg_uscs_data_5;
+*libname new '/idn/basel18/dyelle1/ec_mod/seg/data/subsets'; 
+*%let dsn_in = comb_4_us_cc;
+*%let dsn_in = comb_4_10bpSample;
+*%let dsn_in = comb_5_us_SL;
+
+
+
+*output data;
+%let outputDir = /idn/basel18/dyelle1/ec_mod/seg/data/testing/ec_no_risk_nxt_lvl_uscs_ttc;
+libname ext "&outputDir./ext";
+%let tgt_dir  =&outputDir./tgt;
+
+libname newIn "/idn/basel6/mohit/EC/Aggregate_data/"; *12_2;
+
+
+*parameters;
+%let depVarStatement 	= PD12m_combined / accounts;
+%let ead                = newprob_EAD_trans;
+%let ead_lgd            = NEWPROB_EAD_trans_lgd;
+%let bal                = IDN_acct_CASXPCUS;
+%let cap_impact_as_of   = '201112';
+%let byStatement	 	= market_new mkt_grp_pd business_unit_cd portfolio_cd_new pd_bucket in_sample_ind selVar1Name selVar1Level selVar2Name selVar2Level;
+%let filterStatement 	= f_xclusion=0   and market_new = 'USCS' 
+                                and (   (market_new in ('USCS','ICSS') and '200403' <= month_ind <= '201112')
+							       	 or (market_new in ('ARG') and '200812' <= month_ind <= '201306')
+								 	 or (market_new in ('LAIDC') and '200503' <= month_ind <= '201212')
+									 or (market_new in ('IDCE') and '200603' <= month_ind <= '201306')
+									 or (market_new in ('IEC') and '201003' <= month_ind <= '201306')
+								 )
+
+						and NOT(acct_ind_QRE_Account=0 and business_unit_cd='1' and portfolio_cd_new='L')
+							; *and a_inbase=1;
+								*example filter from last time:
+									200403<= month_ind <=201112 and ind_in_default = 0 and ind_attr = 0 and 
+									not(acct_ind_QRE_Account = 0 and business_unit_cd = '1' and portfolio_cd = "L");
+*rsubmit;
+*list all variables to be tested, excluding Trivial_Test which is inlcuded automatically;
+*note: values must be of type CHAR;
+%let testVarListNoTriv = 
+market_cd
+i_cbs_gp_eq_ng1
+i_cbs_gp_gt500
+i_cbs_gp_gt550
+i_cbs_gp_gt600
+i_cbs_gp_gt625
+i_cbs_gp_gt650
+i_cbs_gp_gt675
+i_cbs_gp_gt700
+i_cbs_gp_gt725
+i_cbs_gp_gt750
+cbal_gp
+i_bal_gp_lt0000
+i_bal_gp_gt0000
+i_bal_gp_gt0050
+i_bal_gp_gt0200
+i_bal_gp_gt0500
+i_bal_gp_gt1000
+i_bal_gp_gt2000
+i_bal_gp_gt3000
+i_bal_gp_gt5000
+cbal_gp2
+i_bal_gp2_gt00000
+i_bal_gp2_gt00050
+i_bal_gp2_gt00200
+i_bal_gp2_gt00500
+i_bal_gp2_gt01000
+i_bal_gp2_gt02000
+i_bal_gp2_gt03000
+i_bal_gp2_gt04000
+i_bal_gp2_gt05000
+i_bal_gp2_gt06000
+i_bal_gp2_gt07000
+i_bal_gp2_gt08000
+i_bal_gp2_gt09000
+i_bal_gp2_gt10000
+i_bal_gp2_gt15000
+i_bal_gp2_gt20000
+i_bal_gp2_gt30000
+i_bal_gp2_gt40000
+i_bal_gp2_gt50000
+i_bal_gp2_gt75000
+i_bal_gp2_gt99999
+cbal_gp3
+i_OOP_cust_grp_gt01
+i_OOP_cust_grp_gt02
+i_OOP_cust_grp_gt03
+i_OOP_cust_grp_gt04
+i_OOP_acct_grp_gt01
+i_OOP_acct_grp_gt02
+i_OOP_acct_grp_gt03
+i_OOP_acct_grp_gt04
+cIDN_acct_CUOEMAGE2_30
+cIDN_acct_CUOEMAGE2_60
+cIDN_acct_CUOEMAGE2_90
+cIDN_acct_CUOEMAGE2_120
+i_mkt_HkNzSi
+;
+
+%let bad_var = 
+(	market_new = 'ICSS' and test_var_name in (
+											'i_cbs_gp_eq_ng1',
+											'i_cbs_gp_gt500',
+											'i_cbs_gp_gt550',
+											'i_cbs_gp_gt600',
+											'i_cbs_gp_gt625',
+											'i_cbs_gp_gt650',
+											'i_cbs_gp_gt675',
+											'i_cbs_gp_gt700',
+											'i_cbs_gp_gt725',
+											'i_cbs_gp_gt750',
+											'i_bal_gp_lt0000',
+											'i_bal_gp_gt0000',
+											'i_bal_gp_gt0050',
+											'i_bal_gp_gt0200',
+											'i_bal_gp_gt0500',
+											'i_bal_gp_gt1000',
+											'i_bal_gp_gt2000',
+											'i_bal_gp_gt3000',
+											'i_bal_gp_gt5000'
+                                          ) 
+or 
+	test_var_name in (
+					'i_OOP_cust_grp_gt01',
+					'i_OOP_cust_grp_gt02',
+					'i_OOP_cust_grp_gt03',
+					'i_OOP_cust_grp_gt04',
+					'cbal_gp',
+					'cbal_gp2',
+					'cbal_gp3',
+											'i_bal_gp_lt0000',
+											'i_bal_gp_gt0000',
+											'i_bal_gp_gt0050',
+											'i_bal_gp_gt0200',
+											'i_bal_gp_gt0500',
+											'i_bal_gp_gt1000',
+											'i_bal_gp_gt2000',
+											'i_bal_gp_gt3000',
+											'i_bal_gp_gt5000'
+                  	)
+);
+
+*rsubmit;
+*macros;
+%let numTestVars = %eval(%sysfunc(countc("&testVarListNoTriv"," "))-1); %put numTestVars=&numTestVars;
+%let nVars = %eval(&numTestVars+1); %put nVars=&nVars;
+
+%include "/idn/basel/pasha/ec_modeling/2015/code/2015Q2.Asset_Correlation_Modeling_Macros_v3_nk.sas";
+*%include "C:\Users\nkuma44\Documents\ERMG\Projects\2015_EC_models\codes\2015Q2.Asset_Correlation_Modeling_Macros_v3_nk.sas";
+
+%macro translate_predicted_score;
+pred_defaults = pred_default_rate * accounts;
+%mend;
+*rsubmit;
+
+%macro segment_test_trigger;
+
+
+*rsubmit;
+%let varlist = &testVarListNoTriv Trivial_Test;
+
+*cleaning step will hopefully go-away once data is finalized;
+*rsubmit;
+
+data cleaned;
+ set new.&dsn_in (rename = (proc_dt = MONTH_IND num_recs=accounts f_pd_default=PD12m_combined));*where  = (in_sample_ind=1));
+ run;
+
+ %do i= 1 %to &nVars;
+ %let current_var = %scan(&varlist,&i);
+ 	%put i = &i;
+ 	%put current_var = &current_var;
+	title2 "test_var = &current_var";
+
+    %illustrate_sensitivity_2013(
+    	input_data  = cleaned,	 	
+    	dep_var     = &depVarStatement,
+    	test_var    = &current_var,
+    	by_vars     = &byStatement,
+    	filter      = &filterStatement and &wh_ini and &wh,	
+		ead         = &ead.,
+		ead_lgd     = &ead_lgd.,
+		bal         = &bal.,
+		cap_impact_as_of = &cap_impact_as_of.,
+    	output_data_add2 = ext.&Version._test_&rd._&cnt._%if &i<&nVars %then %do;&i; %end; %else %if &i=&nVars %then %do;triv; %end;,
+    	output_sensitivities = ext.&Version._sensitivities_&rd._&cnt._%if &i<&nVars %then %do;&i; %end; %else %if &i=&nVars %then %do;triv; %end;,
+     	pre_summarize_for_reg = yes
+    );
+  %end;
+%mend segment_test_trigger;   
+*** Manually Modification on Decisions -- Leave them blank if no modification ***;
+*example: if version = '1_0' and pd_bucket = 0  and compress(test_var) = '(bal_gp>0) ' then Manually_Select = 1;
+
+*rsubmit;
+%macro Manual_Modify;	
+if version = 'test_v01' and pd_bucket = 0  and compress(test_var) = 'i_bal_gp_gt0 ' then Manually_Select = 1;
+%mend;
+ 
+*execution;
+
+
+*%EC_Seg (Version =test_v01 , wh_ini = missing(business_unit_cd) and  portfolio_cd_new='C';
+
+
+*rsubmit;
+libname me "/idn/basel8/dtunali/EC_model_2015/data/QC";
+%let macroecon_file=uer_lead12_new;
+%let macroecon_group_by = market_new business_unit_cd portfolio_cd_new mkt_grp_pd proc_dt ;
+
+data macroecon;
+set me.&macroecon_file.;
+if ind_sbs = 1 then business_unit_cd = '2' ;else business_unit_cd = '1';
+run;
+
+
+
+*rsubmit;
+proc summary data = macroecon nway missing sum;
+class &macroecon_group_by.;
+var uer_acctns accts_times_uer uer_Ar ar_times_uer;
+output out = macroecon_new sum=;
+run;
+
+proc sort data = macroecon_new nodupkey; by  &macroecon_group_by. ;run;
+
+
+ *rsubmit;
+%EC_Seg (Version =test_v01 , wh_ini = business_unit_cd in (' ','1','2') and portfolio_cd_new in ('C','L')
+							, num_def 			=   50
+							, num_acct 			= 1000
+							, thrsh_imprv 		=    100
+							, thrsh_imprv_pct 	=    0
+							, thrsh_P_Chi_Square=    0.01
+							, num_test_var 		= &numTestVars
+							, start_rd 			= 1
+							, end_rd 			= 1
+                            , macro_condition = Estimate_macro < 0 and  ProbChiSq_macro < 0.01
+							);
+
+

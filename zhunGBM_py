@@ -1,0 +1,231 @@
+from __future__ import division
+import bdltools as bdl
+import pandas as pd
+import numpy as np
+import optparse
+
+depVar = "new_gamer_ind_2"
+keyVar = "cm11"
+wgtVar = "wgt"
+
+def gini(inputDF, actualCol, scoreCol,lbl,wgtCol=None):
+    
+    if wgtCol is None:
+	wgtCol = 1
+    binCount = 20
+    # Create bins based on predicted and actual dependent variable
+    #binSize = np.ceil(inputDF.shape[0] / binCount)
+
+    binSize = np.ceil(inputDF[wgtVar].sum(axis=0) / binCount)
+
+
+    inputDF["wgtScore"] = inputDF[wgtVar]*inputDF[scoreCol]
+    inputDF["wgtActual"] = inputDF[wgtVar]*inputDF[actualCol]
+
+
+
+    inputDF = inputDF.sort_values(by = [actualCol], ascending = False).reset_index(drop = True)
+    inputDF["actcumwgt"] = inputDF[wgtVar].cumsum()
+    #inputDF["actualBin"] = np.floor((inputDF.index*inputDF[wgtVar]) / binSize) + 1
+    inputDF["actualBin"] = np.floor((inputDF.actcumwgt)/ binSize) + 1
+
+
+    inputDF = inputDF.sort_values(by = [scoreCol], ascending = False).reset_index(drop = True)
+    inputDF["scrcumwgt"] = inputDF[wgtVar].cumsum()
+    #inputDF["scoreBin"] =  np.floor((inputDF.index*inputDF[wgtVar]) / binSize) + 1
+    inputDF["scoreBin"] = np.floor((inputDF.scrcumwgt)/ binSize) + 1
+    # Calculate bin average
+    #mergedDF = inputDF["wgtActual"].groupby(inputDF["actualBin"], as_index = True).count().to_frame("count")
+    mergedDF = inputDF[wgtCol].groupby(inputDF["actualBin"], as_index = True).sum().to_frame("count")
+
+    #mergedDF["bestMean"] = inputDF["wgtActual"].groupby(inputDF["actualBin"], as_index = True).mean()
+    #mergedDF["respMean"] = inputDF["wgtActual"].groupby(inputDF["scoreBin"], as_index = True).mean()
+    #mergedDF["predMean"] = inputDF["wgtScore"].groupby(inputDF["scoreBin"], as_index = True).mean()
+
+    mergedDF["bestMean"] = inputDF["wgtActual"].groupby(inputDF["actualBin"], as_index = True).sum()/mergedDF["count"]
+    mergedDF["respMean"] = inputDF["wgtActual"].groupby(inputDF["scoreBin"], as_index = True).sum()/mergedDF["count"]
+    mergedDF["predMean"] = inputDF["wgtScore"].groupby(inputDF["scoreBin"], as_index = True).sum()/mergedDF["count"]
+
+    # Reorder bins in ascending order
+    #mergedDF.index.name = None
+    #mergedDF = mergedDF.reindex(range(1, binCount + 1))
+
+    # Bin weight
+    mergedDF["bestPct"] = mergedDF["bestMean"] / mergedDF["bestMean"].sum()
+    mergedDF["respdPct"] = mergedDF["respMean"] / mergedDF["respMean"].sum()
+
+
+    # Cumulative bin weight
+    mergedDF["bestCumPct"] = mergedDF["bestPct"].cumsum()
+    mergedDF["respCumPct"] = mergedDF["respdPct"].cumsum()
+    mergedDF["randomLine"] = mergedDF.index.get_values() / binCount
+
+    mergedDF["SumAct"] = inputDF["wgtActual"].groupby(inputDF["scoreBin"], as_index = True).sum()
+    mergedDF["SumScr"] = inputDF["wgtScore"].groupby(inputDF["scoreBin"], as_index = True).sum()
+
+
+    mergedDF.to_csv(lbl+".csv")
+
+
+    # Calculate Gini and Accuracy 
+    respAUC = np.sum(mergedDF["respCumPct"] - mergedDF["randomLine"]) / binCount
+    bestAUC = np.sum(mergedDF["bestCumPct"] - mergedDF["randomLine"]) / binCount
+    gini = respAUC / bestAUC
+
+    accuracy = 1 - np.abs(mergedDF["predMean"] - mergedDF["respMean"]).sum() / mergedDF["respMean"].sum()
+    score = gini
+
+    return ["{0:.2f}%".format(gini * 100), "{0:.2f}%".format(accuracy * 100)]
+
+
+if __name__ == '__main__':
+
+    parser = optparse.OptionParser()
+    parser.add_option('--n_trees')
+    parser.add_option('--learning_rate')
+    parser.add_option('--depth')
+    parser.add_option('--regression')
+    parser.add_option('--minnode')
+    parser.add_option('--verbose')
+    opts, args = parser.parse_args()
+    
+    devdat, attrfile, valdat, ootdat, devalldat,valalldat, ootalldat, varimp, valscore, ootscore, devallscore, valallscore, ootallscore = args[:13]
+
+
+ 
+    print ('------------Reading data----------')
+    trainDepDF = pd.read_csv(devdat, header = 0, usecols = [keyVar, depVar,wgtVar],dtype = {keyVar: int,wgtVar: int},low_memory = True)
+    testDepDF = pd.read_csv(valdat, header = 0, usecols = [keyVar, depVar,wgtVar],dtype = {keyVar: int,wgtVar: int}, low_memory = True)
+    ootDepDF = pd.read_csv(ootdat, header = 0, usecols = [keyVar, depVar,wgtVar],dtype = {keyVar: int,wgtVar: int}, low_memory = True)
+    trainallDepDF = pd.read_csv(devalldat, header = 0, usecols = [keyVar, depVar,wgtVar], dtype = {keyVar: int,wgtVar: int},low_memory = True)
+    testallDepDF = pd.read_csv(valalldat, header = 0, usecols = [keyVar, depVar,wgtVar],dtype = {keyVar: int,wgtVar: int}, low_memory = True)
+    ootallDepDF = pd.read_csv(ootalldat, header = 0, usecols = [keyVar, depVar,wgtVar],dtype = {keyVar: int,wgtVar: int}, low_memory = True)
+    print trainDepDF.head(5)
+
+
+
+ 
+    print ('-----------bdl_read----------')
+  
+    devdat = bdl.read_bdl(devdat,attrfile,skiprows=1)
+    valdat = bdl.read_bdl(valdat,attrfile,skiprows=1)
+    ootdat = bdl.read_bdl(ootdat,attrfile,skiprows=1)
+    devalldat = bdl.read_bdl(devalldat,attrfile,skiprows=1)
+    valalldat = bdl.read_bdl(valalldat,attrfile,skiprows=1)
+    ootalldat = bdl.read_bdl(ootalldat,attrfile,skiprows=1)
+
+
+    print('-------------Fit GBM Model---------')
+
+    gbm = bdl.GBDT('modelfile', n_trees=opts.n_trees, learning_rate=opts.learning_rate, depth=opts.depth, regression=opts.regression, min_obs_child_node=opts.minnode, verbose=opts.verbose)
+    gbm.fit(dataframe=devdat)
+    
+    print('------------Score on Validation Data--------------')
+    gbm.build_options.pop("min_obs_child_node")
+    gbm.score('valdat_score.txt', dataframe=valdat)
+
+    print('------------Score on OOT Data--------------')
+    #gbm.build_options.pop("min_obs_child_node")
+    gbm.score('ootdat_score.txt', dataframe=ootdat)
+
+
+    print('------------Score on full Train Data--------------')
+    #gbm.build_options.pop("min_obs_child_node")
+    gbm.score('devalldat_score.txt', dataframe=devalldat)
+
+    print('------------Score on ful Validation Data--------------')
+    #gbm.build_options.pop("min_obs_child_node")
+    gbm.score('valalldat_score.txt', dataframe=valalldat)
+
+    print('------------Score on ful OOT Data--------------')
+    #gbm.build_options.pop("min_obs_child_node")
+    gbm.score('ootalldat_score.txt', dataframe=ootalldat)
+
+
+    
+    print('------------Writing Output---------------')
+
+    var_imp= gbm.read_variable_importance()
+    var_imp.to_csv(varimp)
+    val_score= gbm.read_score('valdat_score.txt')
+    val_score.to_csv(valscore)
+
+    oot_score= gbm.read_score('ootdat_score.txt')
+    oot_score.to_csv(ootscore)
+
+    print('-----------1---------------')
+
+
+    devall_score= gbm.read_score('devalldat_score.txt')
+    devall_score.to_csv(devallscore)
+
+    valall_score= gbm.read_score('valalldat_score.txt')
+    valall_score.to_csv(valallscore)
+
+    ootall_score= gbm.read_score('ootalldat_score.txt')
+    ootall_score.to_csv(ootallscore)
+
+    print('-----------2---------------')
+    
+    trainDF = pd.read_csv('modelfile.scores', delimiter = r"\s+", header = None, names = [keyVar, "pred", "dep"])
+    testDF = pd.read_csv('valdat_score.txt', delimiter = r"\s+", header = None, names = [keyVar, "pred", "dep"])
+    ootDF = pd.read_csv('ootdat_score.txt', delimiter = r"\s+", header = None, names = [keyVar, "pred", "dep"])    
+    trainallDF = pd.read_csv('devalldat_score.txt', delimiter = r"\s+", header = None, names = [keyVar, "pred", "dep"])
+    testallDF = pd.read_csv('valalldat_score.txt', delimiter = r"\s+", header = None, names = [keyVar, "pred", "dep"])
+    ootallDF = pd.read_csv('ootalldat_score.txt', delimiter = r"\s+", header = None, names = [keyVar, "pred", "dep"])
+
+    print('-----------replacing dep---------------')
+
+
+    trainDF["dep"] = np.where(trainDF["dep"]>=1, 1, 0)
+    testDF["dep"] = np.where(testDF["dep"]>=1, 1, 0)
+    ootDF["dep"] = np.where(ootDF["dep"]>=1, 1, 0)
+    trainallDF["dep"] = np.where(trainallDF["dep"]>=1, 1, 0)
+    testallDF["dep"] = np.where(testallDF["dep"]>=1, 1, 0)
+    ootallDF["dep"] = np.where(ootallDF["dep"]>=1, 1, 0)
+
+    print('-----------merging dep---------------')
+
+    newTrainDF = pd.merge(trainDF, trainDepDF, on = keyVar, how = "left")
+    newTestDF = pd.merge(testDF, testDepDF, on = keyVar, how = "left")
+    newOotDF = pd.merge(ootDF, ootDepDF, on = keyVar, how = "left")
+    newTrainallDF = pd.merge(trainallDF, trainallDepDF, on = keyVar, how = "left")
+    newTestallDF = pd.merge(testallDF, testallDepDF, on = keyVar, how = "left")
+    newOotallDF = pd.merge(ootallDF, ootallDepDF, on = keyVar, how = "left")
+
+    print newTrainDF.head(5)
+
+
+    print('-----------merging dep csv---------------')
+
+    newTrainDF.to_csv("merged_train.csv", header = True, index = False)
+    newTestDF.to_csv("merged_test.csv", header = True, index = False)
+    newOotDF.to_csv("merged_oot.csv", header = True, index = False)
+    newTrainallDF.to_csv("merged_trainall.csv", header = True, index = False)
+    newTestallDF.to_csv("merged_testall.csv", header = True, index = False)
+    newOotallDF.to_csv("merged_ootall.csv", header = True, index = False)
+
+    print('-----------Gini--------------')
+
+    giniColList = ["devGini", "devAccu","testGini", "testAccu","ootGini", "ootAccu"]
+    reportDF = pd.DataFrame([gini(newTrainDF, depVar , "pred" ,"train",wgtVar) + gini(newTestDF, depVar, "pred","test",wgtVar)  + gini(newOotDF, depVar, "pred","oot",wgtVar) ], columns = giniColList)
+    reportDF.to_csv("gini.csv", index = False)
+
+    reportDF = pd.DataFrame([gini(newTrainallDF, depVar , "pred" ,"trainall",wgtVar) + gini(newTestallDF, depVar, "pred","testall",wgtVar)  + gini(newOotallDF, depVar, "pred","ootall",wgtVar) ], columns = giniColList)
+    reportDF.to_csv("gini_all.csv", index = False)
+
+    reportDF = pd.DataFrame([gini(newTrainDF, 'dep' , "pred" ,"deptrain",wgtVar) + gini(newTestDF, 'dep', "pred","deptest",wgtVar)  + gini(newOotDF, 'dep', "pred","depoot",wgtVar) ], columns = giniColList)
+    reportDF.to_csv("gini_dep_nondef.csv", index = False)
+
+    reportDF = pd.DataFrame([gini(newTrainallDF, 'dep' , "pred" ,"deptrainall",wgtVar) + gini(newTestallDF, 'dep', "pred","deptestall",wgtVar)  + gini(newOotallDF, 'dep', "pred","depootall",wgtVar) ], columns = giniColList)
+    reportDF.to_csv("gini_dep_all.csv", index = False)
+
+
+
+    print('------------Done------------')
+
+
+    
+    
+    
+    

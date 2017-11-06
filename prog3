@@ -1,0 +1,1365 @@
+***************************************************************************************;
+***** USCS Stress Testing Modeling Methodology Main Code													*****;
+*****                                                   *****;
+***************************************************************************************;
+
+***************************************************************************************;
+***** Revision History																														*****;
+
+***************************************************************************************;
+
+%Macro M01_Data_Prep;	
+***** Portfolio Segmentation Logic ***;
+  data tgt.Mst01_ST_&portfolio._&model._seg&seg.;
+   	set &mst.(where = (&ini_subset.));
+   	if ranuni(0) < &insample_per. then insample = 1; else insample = 0;
+   	
+  	 ***Create Additional Variables *;
+  	  dummy = 1;
+  	 
+			AR_em = sum(0, total_bal_amt_em, loc_total_bal_amt_em);
+			AR = sum(0, total_bal_amt, loc_total_bal_amt);
+			lnchg_UER = log(UER/UER_sm);
+		  &dep._amt = &dep * &weight;
+		  &dep_sm._amt = &dep_sm * &weight;		
+  	 	%add_more_var;
+  	 	lgt_&dep_sm. = log(&dep_sm./(1-&dep_sm.));
+  	 	&dep._ramp = &dep./&dep_sm.;
+   	***Apply Segmentation Logic - Creat variable: segment*;
+  	 %seg_logic_&portfolio._&model.;
+  	 
+  	 ***Subset to segment level *;
+  	 if segment = &seg.;
+  	 
+  	 ***Keep, drop and rename variables *;
+	   keep cm11 month_ind qtr portfolio_cd business_unit_cd insample segment dummy &dep._ramp
+	   			 &dep._amt &dep_sm._amt lgt_&dep_sm.
+	   			 &weight   &weight_sm
+	   			 &dep &dep_sm &varlist 
+	   			 PD_sc_lr_adj2_em
+	   			 PD_sc_lr_adj2_b_em
+	   			 ead_sc_lr2_em
+	   			 rec_rate_lr_em
+	   			 rec_rate_lr_b_em
+	   			 capital_axp_em
+	   			 ind_in_default
+           total_bal_amt_em
+           loc_total_bal_amt_em
+           acct_ind_QRE_Account_em
+           total_line_amt_em
+	   			 ;
+  run;
+  proc summary data =  tgt.Mst01_ST_&portfolio._&model._seg&seg. nway missing;
+		class insample month_ind qtr lnchg_UER;
+		var &dep._amt &weight &dep_sm._amt &weight_sm;
+  	output out = tgt.S01_Data_character (drop=_TYPE_) sum=;
+	run;
+	
+  ods csv file="&tgt_dir/S01_Data_character.csv";
+  proc print data=tgt.S01_Data_character;
+  run;
+  ods csv close;    
+  
+  data tgt.Mst02_ST_&portfolio._&model._seg&seg._in;
+  	set tgt.Mst01_ST_&portfolio._&model._seg&seg.;
+  	where insample = 1;
+  run;
+  
+	*** EDD for insample modeling dataset**;
+	%edd (drv = tgt.Mst02_ST_&portfolio._&model._seg&seg._in, out_data=tgt.S01_EDD_insample, out_name = S01_EDD_insample,out_path =&tgt_dir);
+
+%Mend M01_Data_Prep;
+
+%Macro M02_Dep_Corr_Check; 
+
+  %LET corr_check_list = &varlist;
+
+  *** 2.1. independent vs. dependent variable spearman and pearson correlation ***;
+  
+  %Spearman_Corr_Check (indata= tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+  										, indata_subset= (1=1)
+  										, outdata=spearman_corr_rst
+  										, dep_var=&dep
+  										, normal_vars=&corr_check_list
+  										, piece_vars= ); 
+  
+  %Pearson_Corr_Check (indata= tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+  									 , indata_subset= (1=1)
+  									 , outdata=pearson_corr_rst
+  									 , dep_var=&dep
+  									 , wgt= &weight
+  									 , normal_vars=&corr_check_list
+  									 , piece_vars= ); 
+  
+  proc sort data=spearman_corr_rst;by variable;run;
+  proc sort data=pearson_corr_rst;by variable;run;
+  data tgt.S02_Indep_Dep_Orig_Corr;
+  	merge spearman_corr_rst (in=a)
+  	      pearson_corr_rst (in=b) ;
+  	by variable;
+  	if a or b;
+  	min_correlation = min(p_spearman,p_pearson);
+  run;                     
+  *** Append Expected Sign ***;
+  %if %sysfunc(exist(&st_expected_sign.)) %then %do;
+  proc print data =  &st_expected_sign.; run;  
+  	proc sort data = &st_expected_sign.; by variable;run;
+    data tgt.S02_Indep_Dep_Orig_Corr;
+  	  merge tgt.S02_Indep_Dep_Orig_Corr (in = a)
+  	        &st_expected_sign. (rename = (final_sign = expected_sign));
+  	by variable;
+  	if a;
+  %end;              
+  %Output_CSV (indata=tgt.S02_Indep_Dep_Orig_Corr,
+               outfile=&tgt_dir./S02_Indep_Dep_Orig_Corr.csv);
+  
+  *** 2.2. Variable Exclusion based on significant level, Correlation vs. Expected Sign Check and quarterly correlation***;
+  *** 2.2.1. exclude variables with insignificant correlation ***;
+  
+  %Dep_Corr_Exclusion (indata=tgt.S02_Indep_Dep_Orig_Corr, 
+                       sig_level=1,
+                       must_keep_list=,
+                       out_final_dep_corr=tgt.S03_Indep_Dep_Corr_Post_Sig_Chk);
+  
+  %Output_CSV (indata=tgt.S03_Indep_Dep_Corr_Post_Sig_Chk,
+               outfile=&tgt_dir./S03_Indep_Dep_Corr_Post_Sig_Chk.csv);
+  
+  *** 2.2.2. Exlcude variables that have correlation sign inconsistent with portfolio expectations ***;
+  
+  data tgt.S04_Indep_Dep_Corr_Post_Sign_Chk;
+  set tgt.S03_Indep_Dep_Corr_Post_Sig_Chk;
+  	%if %sysfunc(exist(&st_expected_sign.)) %then %do;
+  	  if 	(expected_sign = "+") * (corr_pearson < 0)*(abs_corr_pearson<&dep_indep_signifi) or (expected_sign = "-") * (corr_pearson < 0)*(abs_corr_pearson<&dep_indep_signifi) then delete;
+  	%end;
+  run;
+  %Output_CSV (indata=tgt.S04_Indep_Dep_Corr_Post_Sign_Chk,
+  	           outfile=&tgt_dir./S04_Indep_Dep_Corr_Post_Sign_Chk.csv);	     	                
+  *** 2.2.3. Exlcude variables that have inconsistent sign across 9 Quarter***;
+  
+  %Macro Corr_by_Quart (indata=,dep=,corr_check_list=,num_quart=,outfile=);
+  
+  	%Do x = 1 %TO &num_quart;
+  		%Pearson_Corr_Check (indata= &indata
+  											 , indata_subset= (qtr=&x)
+  											 , outdata=pearson_correlation_&x
+  											 ,  dep_var=&dep
+  											 ,  wgt= &weight
+  											 , normal_vars=&corr_check_list
+  											 , piece_vars= 
+  											 );   		
+  		data pearson_correlation_&x;
+  			set pearson_correlation_&x;
+  			qtr=&x;
+  		run;
+  	%END;
+  	     
+  	data &outfile;
+  		set pearson_correlation_:;
+  	run;
+  %Mend Corr_by_Quart;
+  
+  proc sql;
+  	select 
+  		Variable
+  	into :corr_check_list separated by " "
+  	from tgt.S04_Indep_Dep_Corr_Post_Sign_Chk ;
+  quit;				
+	 
+  %Corr_by_Quart (indata=tgt.Mst02_ST_&portfolio._&model._seg&seg._in,dep=&dep.
+  							 ,corr_check_list=&corr_check_list
+  							 ,num_quart= 9
+  							 ,outfile=S05_pearson_corr_over_9quarts);
+  
+  data tgt.S05_pearson_corr_over_9quarts;
+  	set S05_pearson_corr_over_9quarts;
+  	if p_pearson > &dep_indep_signifi then corr_pearson = 0;
+  run;
+  
+  %Output_CSV (indata=tgt.S05_pearson_corr_over_9quarts,
+               outfile=&tgt_dir./S05_pearson_corr_over_9quarts.csv);							 
+  
+  proc sql noprint;
+  	create table Var_Inconsis_Sign_9Qua as select 
+  		Variable,
+  		max(case when p_pearson <= &dep_indep_signifi                       then corr_pearson else 0 end) as corr_pearson_significant_max,
+  		min(case when p_pearson <= &dep_indep_signifi                       then corr_pearson else 0 end) as corr_pearson_significant_min,
+  		sum(case when p_pearson <= &dep_indep_signifi and corr_pearson > 0 then 1             else 0 end) as corr_pearson_significant_cnt_p,
+  		sum(case when p_pearson <= &dep_indep_signifi and corr_pearson < 0 then 1             else 0 end) as corr_pearson_significant_cnt_m
+  	from tgt.S05_pearson_corr_over_9quarts
+  	group by variable
+  	having corr_pearson_significant_max*corr_pearson_significant_min <0;
+  
+  quit;							 
+  proc sort data = tgt.S04_Indep_Dep_Corr_Post_Sign_Chk; by variable;run;
+  proc sort data = Var_Inconsis_Sign_9Qua; by variable;run;
+  data tgt.S06_Indep_Dep_Final_Corr;
+  	merge tgt.S04_Indep_Dep_Corr_Post_Sign_Chk(in=a)
+  				Var_Inconsis_Sign_9Qua(in=b keep = Variable)
+  				 ;
+  	by Variable;
+  	if a and not b;			 
+  run;
+  
+  %Output_CSV (indata=tgt.S06_Indep_Dep_Final_Corr,
+  	           outfile=&tgt_dir./S06_Indep_Dep_Final_Corr.csv);	   
+  	                
+%Mend M02_Dep_Corr_Check;
+
+%Macro M03_Rank_Plot; 
+	
+proc sql noprint;
+	select distinct
+		variable
+	into :rank_plot_list separated by " "
+	from tgt.S06_Indep_Dep_Final_Corr;
+	quit;
+	
+	*** check the raw variable rank plot in insample***;
+	%RANK_PLOT (libname=tgt,
+            	dataset=Mst02_ST_&portfolio._&model._seg&seg._in, 
+            	selected_vars=&rank_plot_list, 
+            	dep_var=&dep,                   
+            	End_bucket=1, LOG=&log_plot, q=20, wgt=&weight, 
+            	sum_out_xls=&tgt_dir/S05_LGD_Rank_Plot_Raw);
+%Mend M03_Rank_Plot;
+
+%Macro M04_Stepwise_Selection; 
+	proc sql noprint;
+		select distinct
+			variable
+		into :fit_reg_list separated by " "
+		from tgt.S06_Indep_Dep_Final_Corr;
+	quit;
+			
+	*** 4.1 Pearson correlation ***;
+	/*
+	%Spearman_Corr_Check (indata= tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+											, indata_subset= (1=1)
+											, outdata=&model._spearman_corr_s&Seg
+											, dep_var=&dep
+											, normal_vars=&fit_reg_list
+											, piece_vars= ); 
+	*/										
+	%Pearson_Corr_Check (indata= tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+  								 , indata_subset= (1=1)
+  								 , outdata=&model._pearson_corr_s&Seg 
+  								 , dep_var=&dep
+  								 , wgt= &weight
+  								 , normal_vars=&fit_reg_list 
+  								 , piece_vars= ); 										
+	
+	*** 4.2 Multi Factor Analysis ***;
+	%if "&model." = "EAD" %then %do;
+		%Reg_Stepwise_Pearson(indata=tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+									             , pearson_corr=&model._pearson_corr_s&Seg
+									             , siglvl=&sls
+									             , wgt=&weight
+									             , maxstep=&max_step
+									             , max_rd =&max_round
+									             , drop_list=  );
+	%end;
+	%else %do;
+		%Logistic_Stepwise_C1_pearson (indata=tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+												 , pearson_corr=&model._pearson_corr_s&Seg
+												 , siglvl=&sls
+												 , maxstep=&max_step
+												 , div=&div
+												 , weight=&weight);
+	%end;
+	ods csv file="&tgt_dir/S07_Orig_Triangle_Result.csv";
+	  proc report data = m05_round1_triangle;
+		column Variable step Max_Rescaled_R_Sq Partial_R_Sq correlation correlation_sign sign_agree s00 - S&max_step.;
+	  run;
+	ods csv close;
+	proc sql;
+			select 
+			Variable
+		into :vif_check_list separated by " "
+		from m05_round1_triangle
+		where Variable <> 'Intercept';
+	quit;	
+		
+	*** 4.3 High VIF Checking***;
+	*** get VIF checking results for both original and final variables ***;
+	
+	%VIF_Check(indata=tgt.Mst02_ST_&portfolio._&model._seg&seg._in,
+	           vif_threshold=&vif_thrd_base,
+	           vif_list=&vif_check_list,
+	           wgt=&weight,
+	           Vif_Param_Orig =tgt.S08A_Vif_Param_Orig,
+	           Vif_Param_Final =tgt.S08B_Vif_Param_Final);
+	
+	ods csv file="&tgt_dir/S08A_Vif_Param_Orig.csv";
+	proc print data=tgt.S08A_Vif_Param_Orig;
+	run;
+	ods csv close;     
+	
+	ods csv file="&tgt_dir/S08B_Vif_Param_Final.csv";
+	proc print data=tgt.S08B_Vif_Param_Final;
+	run;
+	ods csv close;   
+	
+%Mend M04_Stepwise_Selection;
+
+%Macro M05_Final_Model;
+	
+	*** 5.1 Final Model, Score and Performance***;
+	*Define final modeling variable list, if specified by modeler, use it, otherwise take from initial model*;
+	
+	%LET CNT = 1;
+	%DO %WHILE(%SCAN(&M_final_list,&CNT) NE); 
+	    %LET Cnt=%EVAL(&Cnt+1);
+	%END;
+	%IF &CNT > 1 %THEN %DO;
+	  %LET initial_list = &M_final_list;
+	%END;
+	%ELSE %DO;
+	  proc sql noprint;
+	    select  
+	  		variable
+	  	into :initial_list separated by " "
+	  	from tgt.S08B_Vif_Param_Final
+	  	where variable <> 'Intercept';
+	  quit;	
+	%END;
+	
+	%if "&model." = "EAD" %then %do;
+	
+		*** 5.1.1 Base variable selection***;
+ 			ods output 
+ 			 		SelParmEst       = tgt.S09_Final_Model_Estimates;
+ 			    proc reg data=	tgt.Mst02_ST_&portfolio._&model._seg&seg._in;         
+ 			      model &dep. = &initial_list. 
+ 			                    /selection=stepwise sle=&sle. sls=&sls. lackfit details;
+ 			   run;
+ 			 ods output close;	
+  	proc sql;
+  	create table max_step as
+  		select max(step) as max_step from
+  		tgt.S09_Final_Model_Estimates;
+  	quit;
+  	
+  	data null;
+  	set max_step;
+  	call symputx('max_step', max_step);
+  	run;
+  	
+  	proc sql;
+  	create table S09_Final_Model_Estimates as
+  		select Variable
+  	         ,Estimate
+  	         ,StdErr
+  	         ,FValue
+  	         ,ProbF
+  	  from
+  		tgt.S09_Final_Model_Estimates
+  		where step = &max_step.  	
+  		;
+  	quit;
+  	
+  	data intercept;
+  		set S09_Final_Model_Estimates;
+  		where variable = 'Intercept';
+  	run;
+		*** Append VIF***;
+		proc sql noprint;
+		  select  
+		  	variable
+		  into :base_list separated by " "
+		  from S09_Final_Model_Estimates
+		  where variable <> 'Intercept';
+		quit;	
+		
+  	ods output 
+  	  ParameterEstimates   = Var_VIF2;
+  	  ;          
+  	  proc reg data=tgt.Mst02_ST_&portfolio._&model._seg&seg._in;
+  	  	model &dep = &base_list./vif;
+  	  	weight &weight;
+  	  run;     
+  	ods output close;   
+  	
+  	proc sql;
+  		create table S09_Final_Model_Estimates as
+  		select a.*, b.VarianceInflation
+  		from S09_Final_Model_Estimates a ,Var_VIF2 b
+  		where a.variable = b.variable;
+  	quit; 
+		
+		*** Append Proposed Sign ***;
+		proc sort data = &st_expected_sign.; by variable;run;		
+  	proc sql;
+  		create table S09_Final_Model_Estimates as
+  		select a.*, b.Final_Sign
+  		from S09_Final_Model_Estimates a , &st_expected_sign. b
+  		where a.variable = b.variable
+  		order by FValue desc;
+  	quit; 
+  	
+  	data tgt.S09_Final_Model_Estimates_Base;
+  		set intercept
+  				S09_Final_Model_Estimates;
+  	run;
+		ods csv file="&tgt_dir/S09_Final_Model_Estimates_Base.csv";
+		proc print data=tgt.S09_Final_Model_Estimates_Base;
+		run;
+		ods csv close;  
+		
+		  			
+		*** 5.1.2 Create interaction term***;
+		
+		proc sort data = tgt.S09_Final_Model_Estimates_Base(where = (substr(variable,1,3) = 'qtr')) out = quarter_var_selected;
+			by  descending FValue;
+		run;
+		data quarter_var_selected;
+			set quarter_var_selected(obs=1);
+		run;
+		
+		proc sql noprint;
+		  select  
+		  	variable
+		  into :Quarter_Var separated by " "
+		  from quarter_var_selected;
+		quit;	
+		
+		proc print data = quarter_var_selected; run;
+		data S10_Final_Model_Estimates;
+			set tgt.S09_Final_Model_Estimates_Base(where =(variable not in ('Intercept',"&dep_sm")));
+				    inter_var_sm  = compress ("sm_"    !!variable); formula_var_sm  = compress ("= "!!variable!!" *&dep_sm.      ;");				
+				    if substr(variable,1,7) ^= 'ind_qtr' and substr(variable,1,3) ^= 'qtr' then do;
+				      inter_var_qtr      = compress ("qtr_"    !!variable); formula_var_qtr      = compress ("= "!!variable!!" *&Quarter_Var.;"); 
+				    end;			
+				    else do;
+				    	 inter_var_qtr      = ''; formula_var_qtr         = '';
+						end;			
+		run;	
+		proc sql noprint;
+		 select count(*) into :obs_cnt
+		 from S10_Final_Model_Estimates;
+		quit;
+		
+		%if  &obs_cnt>0 %then %do;	
+			data _NULL_;
+				set S10_Final_Model_Estimates;
+				file "&tgt_dir/S10_interaction_formula.txt";
+			  	put inter_var_qtr     formula_var_qtr    ;
+			  	put inter_var_sm		  formula_var_sm		 ;
+			run;
+			
+			data tgt.Mst01b_ST_&portfolio._&model._seg&seg.;
+				set tgt.Mst01_ST_&portfolio._&model._seg&seg.;
+					%Include "&tgt_dir/S10_interaction_formula.txt";
+			run;
+			*** 5.1.3 Refit the model by adding interaction terms***;		
+			data _NULL_;
+				set S10_Final_Model_Estimates(where =(variable ^='Intercept')) end=end_ind;
+				file "&tgt_dir/S10_inter_variable_list.txt";
+			  if _N_=1 then do;
+					put '%let inter_list= ';
+				end;
+			  
+					put inter_var_qtr    ;				
+					put inter_var_sm ;
+			   if end_ind then put ';';
+			run;
+			%include "&tgt_dir/S10_inter_variable_list.txt";
+			
+		%end;
+		%else %do;
+			%let inter_list= ;
+			data tgt.Mst01b_ST_&portfolio._&model._seg&seg.;
+				set tgt.Mst01_ST_&portfolio._&model._seg&seg.;
+			run;
+		%end;
+		
+			*** Run final model -- Linear Regression ***;
+ 			ods output 
+ 			 		SelParmEst       = S10_Final_Model_Estimates;
+ 			    proc reg data=	tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1));         
+ 			      model &dep. = &base_list. &inter_list.
+ 			                    /selection=stepwise sle=&sle. sls=&sls. lackfit details;
+ 			   run;
+ 			 ods output close;	
+  	
+  	proc sql;
+  	create table max_step as
+  		select max(step) as max_step from
+  		S10_Final_Model_Estimates;
+  	quit;
+  	
+  	data null;
+  	set max_step;
+  	call symputx('max_step', max_step);
+  	run;
+  	
+  	proc sql;
+  	create table tgt.S10_Intera_Model_Estimates as
+  		select Variable
+  	         ,Estimate
+  	         ,StdErr
+  	         ,FValue
+  	         ,ProbF
+  	  from
+  		S10_Final_Model_Estimates
+  		where step = &max_step.  	
+  		;
+  	quit;
+  	
+		*** 5.1.4 High VIF Checking***;
+		proc sql;
+				select 
+				Variable
+			into :vif_check_list separated by " "
+			from tgt.S10_Intera_Model_Estimates
+			where Variable <> 'Intercept';
+		quit;	
+			
+		*** get VIF checking results for both original and final variables ***;	
+		%VIF_Check(indata=tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1)),
+		           vif_threshold=&vif_thrd_inter,
+		           vif_list=&vif_check_list,
+		           wgt=&weight,
+		           Vif_Param_Orig =tgt.S10A_Vif_Param_Orig,
+		           Vif_Param_Final =tgt.S10B_Vif_Param_Final);
+		
+		ods csv file="&tgt_dir/S10A_Vif_Param_Orig.csv";
+		proc print data=tgt.S10A_Vif_Param_Orig;
+		run;
+		ods csv close;     
+		
+		ods csv file="&tgt_dir/S10B_Vif_Param_Final.csv";
+		proc print data=tgt.S10B_Vif_Param_Final;
+		run;
+		ods csv close;   
+
+		***  5.1.5 Sign Check***; 
+		
+	 proc sql noprint;
+	    select  
+	  		variable
+	  	into :final_list separated by " "
+	  	from tgt.S10B_Vif_Param_Final
+	  	where variable <> 'Intercept';
+	  quit;		
+  	%Pearson_Corr_Check (indata= tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+  								 , indata_subset= (1=1)
+  								 , outdata=pearson_corr_ramp_up
+  								 , dep_var=&dep._ramp
+  								 , wgt= &weight.
+  								 , normal_vars=&varlist.
+  								 , piece_vars= ); 
+  	
+		ods csv file="&tgt_dir/pearson_corr_ramp_up.csv";
+		proc print data=pearson_corr_ramp_up;
+		run;
+		ods csv close;  
+									 
+  	%let sign_check = 0;
+		%DO %WHILE(&sign_check.=0);
+ 			ods output 
+ 			 		SelParmEst       = S10_Final_Model_Estimates;
+ 			    proc reg data=	tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1));         
+ 			      model &dep. = &final_list. /selection=stepwise sle=&sle. sls=&sls. lackfit details;
+ 			   run;
+ 			 ods output close;	
+		  data tgt.check;
+		  	set _null_;
+		  run;
+  	  proc sql;
+  	  create table max_step as
+  	  	select max(step) as max_step from
+  	  	S10_Final_Model_Estimates;
+  	  quit;  	  
+  	  data null;
+  	  set max_step;
+  	  call symputx('max_step', max_step);
+  	  run;  	  
+  	  proc sql;
+  	  create table S10_Final_Model_Estimates as
+  	  	select  a.Variable
+  	           ,a.Estimate
+  	           ,a.StdErr
+  	           ,a.FValue
+  	           ,a.ProbF
+  	           ,b.final_sign as expected_sign
+  	    from
+  	  	S10_Final_Model_Estimates a
+  	  	left outer join  &st_expected_sign. b
+  	  	on a.Variable = b.Variable
+  	  	where a.step = &max_step. 
+  	  	;
+  	  quit; 
+  	
+		  data S10_Final_Model_Estimates;
+		  	set S10_Final_Model_Estimates;
+		  	if missing(expected_sign) then I_inter_var = 1; else I_inter_var = 0;
+		  	if I_inter_var = 1 then do;
+  	  				 if substr(variable, 1,3)='sm_' 		 then do; var1 = 'ead_sc_lr2'; var2 = substr(variable,4 ,32); end;
+  	  		else if substr(variable, 1,7)='qtr_ln_'  then do; var1 = 'qtr_ln'; 		 var2 = substr(variable,8 ,32); end;  
+  	  		else if substr(variable, 1,8)='qtr_cub_' then do; var1 = 'qtr_cub'; 	 var2 = substr(variable,9 ,32); end;  
+  	  		else if substr(variable, 1,8)='qtr_sqr_' then do; var1 = 'qtr_sqr'; 	 var2 = substr(variable,9 ,32); end;  
+  	  		else if substr(variable, 1,4)='qtr_' 		 then do; var1 = 'qtr'; 	 		 var2 = substr(variable,5 ,32); end; 
+  	  	end;  	
+  	  run;
+  	  
+		  proc sql;
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.Estimate as var1_coeffi
+		  	from S10_Final_Model_Estimates a
+		  	left outer join S10_Final_Model_Estimates b
+		  	on a.var1 = b.variable
+		  	);
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.min_or_top2  as var1_min
+		  		    ,b.max_or_top10 as var1_max
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join tgt.S01_EDD_insample b
+		  	on a.var1 = b.variable
+		  	);
+		  	
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.Estimate as var2_coeffi
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join S10_Final_Model_Estimates b
+		  	on a.var2 = b.variable
+		  	);
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.min_or_top2  as var2_min
+		  		    ,b.max_or_top10 as var2_max
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join tgt.S01_EDD_insample b
+		  	on a.var2 = b.variable
+		  	);
+		  	
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.corr_pearson  as var2_corr_pearson
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join pearson_corr_ramp_up b
+		  	on a.var2 = b.variable
+		  	);
+		  quit;
+		  
+ 		  data tgt.check;
+		  	set _null_;
+		  run;
+		  data S10_Final_Model_Estimates_sign;
+		  	set S10_Final_Model_Estimates_sign; 
+		  	
+		  	*** Base variable sign check ***; 
+		  	if I_inter_var = 0 then do;
+		  		i_correct_sign_base = ((expected_sign = '+' and Estimate>0) or (expected_sign = '-' and Estimate<0) or expected_sign = '??' );
+		  	end;
+		  	
+		  	*** Interaction term Variable 1 Sign Check ***;
+		  	else if I_inter_var = 1 then do;
+		  	if not missing(var1_coeffi) then do;
+		  		i_correct_sign_var1 = (((Estimate*var2_min+var1_coeffi)*var1_coeffi>0) and (Estimate*var2_max+var1_coeffi)*var1_coeffi>0);
+		  	end;  
+		  	else i_correct_sign_var1 = 1;			
+		  
+		  	*** Interaction term Variable 2 Sign Check ***;
+		  	if var1 = 'ead_sc_lr2' and not missing(var2_coeffi) then do;			
+		  		i_correct_sign_var2 = (((Estimate*var1_min+var2_coeffi)*var2_coeffi>0) 
+		  												and (Estimate*var1_max+var2_coeffi)*var2_coeffi>0 
+		  												and var2_corr_pearson*Estimate >0);
+		  	end;
+		  	else if var1 = 'ead_sc_lr2' and missing(var2_coeffi) then do;			
+		  		i_correct_sign_var2 = (var2_corr_pearson*Estimate >0);
+		  	end;
+		  	else if not missing(var2_coeffi) then do;
+		  		i_correct_sign_var2 = (((Estimate*var1_min+var2_coeffi)*var2_coeffi>0) and (Estimate*var1_max+var2_coeffi)*var2_coeffi>0);
+		  	end;			  	
+		  	else 	i_correct_sign_var2 = 1;			
+		  	end;		  
+		  	*** Create combined sign check indicator ***;
+		  	i_correct_sign = min( i_correct_sign_base, i_correct_sign_var1, i_correct_sign_var2);
+		  	run;
+		  		
+		  	ods csv file="&tgt_dir/S10_Final_Model_Estimates_sign.csv";
+		  	proc print data=S10_Final_Model_Estimates_sign;
+		  	run;
+		  	ods csv close; 
+  	  	
+  	  	 proc sql noprint;
+		      select  min(i_correct_sign) 
+		    	into :sign_check separated by " "
+		    	from S10_Final_Model_Estimates_sign;
+		    quit;	
+  	  	 proc sql noprint;
+		      select  variable
+		    	into :final_list separated by " "
+		    	from S10_Final_Model_Estimates_sign
+		    	where variable <> 'Intercept'
+		    	and i_correct_sign=1
+		    	;
+		    quit;	
+		    		    
+		    data S10_Final_Model_Estimates;
+		    	set S10_Final_Model_Estimates_sign;
+		    run;		    
+		 %END;
+
+  	proc sql;
+  		create table intercept as
+  		select 
+  			  Variable
+  			, Estimate
+  			, StdErr  
+  			, FValue  
+  			, ProbF   
+  		from S10_Final_Model_Estimates
+  		where variable = 'Intercept';
+  	quit; 
+  	
+  	proc sort data = S10_Final_Model_Estimates(where = (variable ^= 'Intercept'));
+  		by descending FValue ;
+  	run;
+  	
+  	*** Append VIF***;
+		proc sql noprint;
+		  select  
+		  	variable
+		  into :final_list separated by " "
+		  from S10_Final_Model_Estimates
+		  where variable <> 'Intercept';
+		quit;	
+		
+  	ods output 
+  	  ParameterEstimates   = Var_VIF3;
+  	  ;          
+  	  proc reg data=tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1));
+  	  	model &dep = &final_list./vif;
+  	  	weight &weight;
+  	  run;     
+  	ods output close;   
+  	
+  	proc sql;
+  		create table S10_Final_Model_Estimates as
+  		select 
+  			  a.Variable
+  			, a.Estimate
+  			, a.StdErr  
+  			, a.FValue  
+  			, a.ProbF   
+  			, b.VarianceInflation
+  		from S10_Final_Model_Estimates a ,Var_VIF3 b
+  		where a.variable = b.variable;
+  	quit; 
+  	data tgt.S10C_Final_Model_Estimates;
+  		set intercept
+  				S10_Final_Model_Estimates;
+  	run;
+  	
+		ods csv file="&tgt_dir/S10C_Final_Model_Estimates.csv";
+		proc print data=tgt.S10C_Final_Model_Estimates;
+		run;
+		ods csv close;  
+		
+		*** 5.1.4 Score ***;	
+		
+  	%regscore(indata  = tgt.Mst01b_ST_&portfolio._&model._seg&seg.
+  	      ,outdata = tgt.Mst03_ST_&portfolio._&model._seg&seg.
+  	      ,regest  = tgt.S10C_Final_Model_Estimates
+  	      ,depvar  = &dep
+  	      ,depvarh = &dep._h
+  	      );
+		*** 5.1.5 Model Performance ***;	
+		%validation_EAD1(indata=tgt.Mst03_ST_&portfolio._&model._seg&seg.,where_clause= insample=1,dep=&dep.
+									, dep_h=&dep._h ,nbins=20, out_dir=&tgt_dir, outdata=all_in_sample ,outlorenz=all_in_sample , chart_title=all_in_sample);
+  	%validation_EAD1(indata=tgt.Mst03_ST_&portfolio._&model._seg&seg.,where_clause= insample=0,dep=&dep.
+  								, dep_h=&dep._h ,nbins=20, out_dir=&tgt_dir, outdata=all_out_sample,outlorenz=all_out_sample , chart_title=all_out_sample);
+  	
+ 		data tgt.S11_Final_Model_Perf;
+			set all_in_sample (in=a) 
+			    all_out_sample(in=b)
+			    ;                           
+			if a then in_sample=1;else in_sample=0;
+			drop modified_accuracy_index;
+		run;
+		
+		ods csv file="&tgt_dir/S11_Final_Model_Perf.csv";
+		proc print data=tgt.S11_Final_Model_Perf;
+		run;
+		ods csv close;  
+		
+ 	%end;
+	%else %do;
+	
+	*** Run base model -- Logistic Regression ***;
+		
+ 		ods output 
+    	ParameterEstimates   = tgt.S09_Final_Model_Estimates;
+    	
+   		proc logistic data=tgt.Mst02_ST_&portfolio._&model._seg&seg._in descending namelen=32;            		
+   		   model &dep./dummy = &initial_list. 
+   		                 /selection=stepwise sle=&sle. sls=&sls. lackfit rsq ctable;
+   		   weight &weight;
+   		
+   		run;
+    ods output close;
+
+  data intercept;
+  	set tgt.S09_Final_Model_Estimates;
+  	where variable = 'Intercept';
+  run;
+	*** Append VIF***;
+	proc sql noprint;
+	  select  
+	  	variable
+	  into :base_var separated by " "
+	  from tgt.S09_Final_Model_Estimates
+	  where variable <> 'Intercept';
+	quit;	
+	
+  ods output 
+    ParameterEstimates   = Var_VIF2;
+    ;          
+    proc reg data=tgt.Mst02_ST_&portfolio._&model._seg&seg._in;
+    	model &dep = &base_var./vif;
+    	weight &weight;
+    run;     
+  ods output close;   
+  
+  proc sql;
+  	create table S09_Final_Model_Estimates as
+  	select a.*, b.VarianceInflation
+  	from tgt.S09_Final_Model_Estimates a ,Var_VIF2 b
+  	where a.variable = b.variable;
+  quit; 
+	
+	*** Append Proposed Sign ***;
+	proc sort data = &st_expected_sign.; by variable;run;		
+  proc sql;
+  	create table S09_Final_Model_Estimates as
+  	select a.*, b.Final_Sign
+  	from S09_Final_Model_Estimates a , &st_expected_sign. b
+  	where a.variable = b.variable
+  	order by  WaldChiSq desc;
+  quit; 
+  
+  data tgt.S09_Final_Model_Estimates_Base;
+  	set intercept
+  			S09_Final_Model_Estimates;
+  run;
+	ods csv file="&tgt_dir/S09_Final_Model_Estimates_Base.csv";
+	proc print data=tgt.S09_Final_Model_Estimates_Base;
+	run;
+	ods csv close;   
+	  			
+	*** 5.1.2 Create interaction term***;	
+	proc sort data = tgt.S09_Final_Model_Estimates_Base(where = (substr(variable,1,3) = 'qtr')) out = quarter_var_selected;
+		by  descending WaldChiSq;
+	run;
+	data quarter_var_selected;
+		set quarter_var_selected(obs=1);
+	run;
+		proc sql noprint;
+	  select  
+	  	variable
+	  into :Quarter_Var separated by " "
+	  from quarter_var_selected;
+	quit;	
+	
+	proc print data = quarter_var_selected; run;
+	data S10_Final_Model_Estimates;
+		set tgt.S09_Final_Model_Estimates_Base(where =(variable not in ('Intercept',"&dep_sm") and substr(variable,1,7) ^= 'ind_qtr'));			    
+			    /*inter_var_sm  = compress ("sm_"    !!variable); formula_var_sm  = compress ("= "!!variable!!" *logit_&dep_sm.      ;");*/							    
+			    if substr(variable,1,3) ^= 'qtr' then do;
+			      inter_var_qtr      = compress ("qtr_"    !!variable); formula_var_qtr      = compress ("= "!!variable!!" *&Quarter_Var.;"); 
+			    end;			
+			    else do;
+			    	 inter_var_qtr      = ''; formula_var_qtr         = '';
+					end;			
+	run;		
+	proc sql noprint;
+	 select count(*) into :obs_cnt
+	 from S10_Final_Model_Estimates;
+	quit;
+	
+	%if  &obs_cnt>0 %then %do;	
+		data _NULL_;
+			set S10_Final_Model_Estimates;
+			file "&tgt_dir/S10_interaction_formula.txt";
+		  	put inter_var_qtr     formula_var_qtr    ;
+		  	/*put inter_var_sm		  formula_var_sm		 ;*/
+		run;
+		
+		data tgt.Mst01b_ST_&portfolio._&model._seg&seg.;
+			set tgt.Mst01_ST_&portfolio._&model._seg&seg.;
+				%Include "&tgt_dir/S10_interaction_formula.txt";
+		run;
+		*** 5.1.3 Refit the model by adding interaction terms***;		
+		data _NULL_;
+			set S10_Final_Model_Estimates(where =(variable ^='Intercept')) end=end_ind;
+			file "&tgt_dir/S10_inter_variable_list.txt";
+		  if _N_=1 then do;
+				put '%let inter_list= ';
+			end;
+		  
+				put inter_var_qtr    ;				
+				/*put inter_var_sm ;*/
+		   if end_ind then put ';';
+		run;
+		%include "&tgt_dir/S10_inter_variable_list.txt";
+		
+	%end;
+	%else %do;
+		%let inter_list= ;
+		data tgt.Mst01b_ST_&portfolio._&model._seg&seg.;
+			set tgt.Mst01_ST_&portfolio._&model._seg&seg.;
+		run;
+	%end;
+ 		ods output 
+ 		ParameterEstimates   = tgt.S10_Intera_Model_Estimates;
+   		proc logistic data=tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1)) descending namelen=32;            		
+   		   model &dep./dummy = &base_var. &inter_list.
+   		                 /selection=stepwise sle=&sle. sls=&sls. lackfit rsq ctable;
+   		   weight &weight;              
+   		
+   		run;
+    ods output close;
+    
+	*** 5.1.4 High VIF Checking***;
+	proc sql;
+			select 
+			Variable
+		into :vif_check_list separated by " "
+		from tgt.S10_Intera_Model_Estimates
+		where Variable <> 'Intercept';
+	quit;	
+		
+	*** get VIF checking results for both original and final variables ***;	
+	%VIF_Check(indata=tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1)),
+	           vif_threshold=&vif_thrd_inter,
+	           vif_list=&vif_check_list,
+	           wgt=&weight,
+	           Vif_Param_Orig =tgt.S10A_Vif_Param_Orig,
+	           Vif_Param_Final =tgt.S10B_Vif_Param_Final);
+	
+	ods csv file="&tgt_dir/S10A_Vif_Param_Orig.csv";
+	proc print data=tgt.S10A_Vif_Param_Orig;
+	run;
+	ods csv close;     
+	
+	ods csv file="&tgt_dir/S10B_Vif_Param_Final.csv";
+	proc print data=tgt.S10B_Vif_Param_Final;
+	run;
+	ods csv close;   
+	
+	***  5.1.5 Sign Check***; 		
+	 proc sql noprint;
+	    select  
+	  		variable
+	  	into :final_list separated by " "
+	  	from tgt.S10B_Vif_Param_Final
+	  	where variable <> 'Intercept';
+	  quit;		
+  	%Pearson_Corr_Check (indata= tgt.Mst02_ST_&portfolio._&model._seg&seg._in
+  								 , indata_subset= (1=1)
+  								 , outdata=pearson_corr_ramp_up
+  								 , dep_var=&dep._ramp
+  								 , wgt= &weight.
+  								 , normal_vars=&varlist.
+  								 , piece_vars= ); 
+  	
+		ods csv file="&tgt_dir/pearson_corr_ramp_up.csv";
+		proc print data=pearson_corr_ramp_up;
+		run;
+		ods csv close;  
+									 
+  	%let sign_check = 0;
+		%DO %WHILE(&sign_check.=0);
+ 		ods output 
+ 		ParameterEstimates   = S10_Intera_Model_Estimates;
+   		proc logistic data=tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1)) descending namelen=32;            		
+   		   model &dep./dummy = &final_list
+   		                 /selection=stepwise sle=&sle. sls=&sls. lackfit rsq ctable;
+   		   weight &weight;                 		
+   		run;
+    ods output close;
+	  	  
+  	  proc sql;
+  	  create table S10_Final_Model_Estimates as
+  	  	select  a.Variable
+  	           ,a.Estimate
+  	           ,a.StdErr
+  	           ,a.WaldChiSq
+  	           ,a.ProbChiSq
+  	           ,b.final_sign as expected_sign
+  	    from
+  	  	S10_Final_Model_Estimates a
+  	  	left outer join  &st_expected_sign. b
+  	  	on a.Variable = b.Variable
+  	  	;
+  	  quit; 
+  	
+		  data S10_Final_Model_Estimates;
+		  	set S10_Final_Model_Estimates;
+		  	if missing(expected_sign) then I_inter_var = 1; else I_inter_var = 0;
+		  	if I_inter_var = 1 then do;
+  	  				 if substr(variable, 1,3)='sm_' 		 then do; var1 = 'ead_sc_lr2'; var2 = substr(variable,4 ,32); end;
+  	  		else if substr(variable, 1,7)='qtr_ln_'  then do; var1 = 'qtr_ln'; 		 var2 = substr(variable,8 ,32); end;  
+  	  		else if substr(variable, 1,8)='qtr_cub_' then do; var1 = 'qtr_cub'; 	 var2 = substr(variable,9 ,32); end;  
+  	  		else if substr(variable, 1,8)='qtr_sqr_' then do; var1 = 'qtr_sqr'; 	 var2 = substr(variable,9 ,32); end;  
+  	  		else if substr(variable, 1,4)='qtr_' 		 then do; var1 = 'qtr'; 	 		 var2 = substr(variable,5 ,32); end; 
+  	  	end;  	
+  	  run;
+  	  
+		  proc sql;
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.Estimate as var1_coeffi
+		  	from S10_Final_Model_Estimates a
+		  	left outer join S10_Final_Model_Estimates b
+		  	on a.var1 = b.variable
+		  	);
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.min_or_top2  as var1_min
+		  		    ,b.max_or_top10 as var1_max
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join tgt.S01_EDD_insample b
+		  	on a.var1 = b.variable
+		  	);
+		  	
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.Estimate as var2_coeffi
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join S10_Final_Model_Estimates b
+		  	on a.var2 = b.variable
+		  	);
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.min_or_top2  as var2_min
+		  		    ,b.max_or_top10 as var2_max
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join tgt.S01_EDD_insample b
+		  	on a.var2 = b.variable
+		  	);
+		  	
+		  	create table S10_Final_Model_Estimates_sign as(
+		  	select a.*
+		  		    ,b.corr_pearson  as var2_corr_pearson
+		  	from S10_Final_Model_Estimates_sign a
+		  	left outer join pearson_corr_ramp_up b
+		  	on a.var2 = b.variable
+		  	);
+		  quit;
+		  
+ 		  data tgt.check;
+		  	set _null_;
+		  run;
+		  data S10_Final_Model_Estimates_sign;
+		  	set S10_Final_Model_Estimates_sign; 
+		  	
+		  	*** Base variable sign check ***; 
+		  	if I_inter_var = 0 then do;
+		  		i_correct_sign_base = ((expected_sign = '+' and Estimate>0) or (expected_sign = '-' and Estimate<0) or expected_sign = '??' );
+		  	end;
+		  	
+		  	*** Interaction term Variable 1 Sign Check ***;
+		  	else if I_inter_var = 1 then do;
+		  	if not missing(var1_coeffi) then do;
+		  		i_correct_sign_var1 = (((Estimate*var2_min+var1_coeffi)*var1_coeffi>0) and (Estimate*var2_max+var1_coeffi)*var1_coeffi>0);
+		  	end;  
+		  	else i_correct_sign_var1 = 1;			
+		  
+		  	*** Interaction term Variable 2 Sign Check ***;
+		  	
+		  	if var1 = "&dep_sm." and not missing(var2_coeffi) then do;			
+		  		i_correct_sign_var2 = (((Estimate*var1_min+var2_coeffi)*var2_coeffi>0) 
+		  												and (Estimate*var1_max+var2_coeffi)*var2_coeffi>0 
+		  												and var2_corr_pearson*Estimate >0);
+		  	end;
+		  	else if var1 = "&dep_sm." and missing(var2_coeffi) then do;			
+		  		i_correct_sign_var2 = (var2_corr_pearson*Estimate >0);
+		  	end;
+		  	else if not missing(var2_coeffi) then do;
+		  		i_correct_sign_var2 = (((Estimate*var1_min+var2_coeffi)*var2_coeffi>0) and (Estimate*var1_max+var2_coeffi)*var2_coeffi>0);
+		  	end;			  	
+		  	else 	i_correct_sign_var2 = 1;			
+		  	end;		  
+		  	*** Create combined sign check indicator ***;
+		  	i_correct_sign = min( i_correct_sign_base, i_correct_sign_var1, i_correct_sign_var2);
+		  	run;
+		  		
+		  	ods csv file="&tgt_dir/S10_Final_Model_Estimates_sign.csv";
+		  	proc print data=S10_Final_Model_Estimates_sign;
+		  	run;
+		  	ods csv close; 
+  	  	
+  	  	 proc sql noprint;
+		      select  min(i_correct_sign) 
+		    	into :sign_check separated by " "
+		    	from S10_Final_Model_Estimates_sign;
+		    quit;	
+  	  	 proc sql noprint;
+		      select  variable
+		    	into :final_list separated by " "
+		    	from S10_Final_Model_Estimates_sign
+		    	where variable <> 'Intercept'
+		    	and i_correct_sign=1
+		    	;
+		    quit;	
+		    		    
+		    data S10_Final_Model_Estimates;
+		    	set S10_Final_Model_Estimates_sign;
+		    run;		    
+		 %END;
+
+  	proc sql;
+  		create table intercept as
+  		select 
+  			  Variable
+  			, Estimate
+  			, StdErr  
+  			, WaldChiSq  
+  			, ProbChiSq   
+  		from S10_Final_Model_Estimates
+  		where variable = 'Intercept';
+  	quit; 
+  	
+	
+  data intercept;
+  	set S10_Final_Model_Estimates(where = (variable = 'Intercept'));
+  run;
+  
+  proc sort data = S10_Final_Model_Estimates(where = (variable ^= 'Intercept'));
+  	by descending WaldChiSq ;
+  run;
+  *** Append VIF***;
+	proc sql noprint;
+	  select  
+	  	variable
+	  into :final_list separated by " "
+	  from S10_Final_Model_Estimates
+	  where variable <> 'Intercept';
+	quit;	
+	
+  ods output 
+    ParameterEstimates   = Var_VIF3;
+    ;          
+    proc reg data=tgt.Mst01b_ST_&portfolio._&model._seg&seg.(where = (insample=1));
+    	model &dep = &final_list./vif;
+    	weight &weight;
+    run;     
+  ods output close;   
+  
+  proc sql;
+  	create table S10_Final_Model_Estimates as
+  	select 
+  		  a.Variable 
+  		, a.DF       
+  		, a.Estimate 
+  		, a.StdErr   
+  		, a.WaldChiSq
+  		, a.ProbChiSq
+  		, b.VarianceInflation
+  	from S10_Final_Model_Estimates a ,Var_VIF3 b
+  	where a.variable = b.variable;
+  quit; 
+  data tgt.S10C_Final_Model_Estimates;
+  	set intercept
+  			S10_Final_Model_Estimates;
+  run;
+  
+	ods csv file="&tgt_dir/S10C_Final_Model_Estimates.csv";
+	proc print data=tgt.S10C_Final_Model_Estimates;
+	run;
+	ods csv close;  
+	
+	*** 5.1.4 Score ***;	
+	%lgtscore(indata  = tgt.Mst01b_ST_&portfolio._&model._seg&seg.
+         ,outdata = tgt.Mst03_ST_&portfolio._&model._seg&seg.
+         ,regest  = tgt.S10C_Final_Model_Estimates
+         ,depvar  = &dep.
+         ,depvarh = &dep._h);
+	*** 5.1.5 Model Performance ***;	
+	%validation_LGD1(indata=tgt.Mst03_ST_&portfolio._&model._seg&seg.,where_clause= insample=1,dep=&dep.
+								, dep_h=&dep._h ,wt=&weight, nbins=20, out_dir=&tgt_dir, outdata=all_in_sample ,outlorenz=all_in_sample , chart_title=all_in_sample);
+  %validation_LGD1(indata=tgt.Mst03_ST_&portfolio._&model._seg&seg.,where_clause= insample=0,dep=&dep.
+  							, dep_h=&dep._h ,wt=&weight, nbins=20, out_dir=&tgt_dir, outdata=all_out_sample,outlorenz=all_out_sample , chart_title=all_out_sample);	
+	
+	data tgt.S11_Final_Model_Perf;
+		set all_in_sample (in=a) 
+		    all_out_sample(in=b)
+		    ;                           
+		if a then in_sample=1;else in_sample=0;
+		drop modified_accuracy_index;
+	run;
+	
+	ods csv file="&tgt_dir/S11_Final_Model_Perf.csv";
+	proc print data=tgt.S11_Final_Model_Perf;
+	run;
+	ods csv close;     
+	%end;	
+	
+	*** 5.2 Predict vs. Actual Over Time Trend***;	
+	data tgt.Mst03_ST_&portfolio._&model._seg&seg.;
+		set tgt.Mst03_ST_&portfolio._&model._seg&seg.;
+		  &dep._amt    = &dep     * &weight; 
+		  &dep._h_amt  = &dep._h  * &weight;
+	run;
+		
+	proc summary data=tgt.Mst03_ST_&portfolio._&model._seg&seg. nway missing;
+		class 
+					insample
+					month_ind   
+		      ;
+		var   &dep._amt   
+		      &dep._h_amt 
+		      &weight
+		      ;
+		output out = S11A_Final_Pred_Act_Summ (drop=_TYPE_) sum()=;
+	run;
+		
+
+	proc summary data=tgt.Mst03_ST_&portfolio._&model._seg&seg. nway missing;
+		class 
+					insample
+					qtr		      
+		      ;
+		var   &dep._amt   
+		      &dep._h_amt 
+		      &weight
+		      ;
+		output out = S11B_Final_Pred_Act_Summ (drop=_TYPE_) sum()=;
+	run;	
+	proc summary data=tgt.Mst03_ST_&portfolio._&model._seg&seg. nway missing;
+		class 
+					insample
+					month_ind
+					qtr		      
+		      ;
+		var   &dep._amt   
+		      &dep._h_amt 
+		      &weight
+		      ;
+		output out = S11C_Final_Pred_Act_Summ (drop=_TYPE_) sum()=;
+	run;			
+	data tgt.S11_Final_Pred_Act_Summ;
+		set S11A_Final_Pred_Act_Summ(in=a)
+				S11B_Final_Pred_Act_Summ(in=b)
+				S11C_Final_Pred_Act_Summ(in=c)
+				;
+		if a then qtr = 0;
+		if b then month_ind = 0;
+	run;		
+	
+	ods csv file="&tgt_dir/S11_Final_Pred_Act_Summ.csv";
+	proc print data=tgt.S11_Final_Pred_Act_Summ;
+	run;
+	ods csv close; 
+ 
+%Mend M05_Final_Model;
+
+%Macro M06_Capital_Calculation;
+	proc contents data =  tgt.Mst03_ST_&portfolio._&model._seg&seg.(obs=1);
+	run;
+	
+	proc sort data = tgt.Mst03_ST_&portfolio._&model._seg&seg. out = Mst03_ST_&portfolio._&model._seg&seg.;
+		by cm11;
+	run;
+	
+	data tgt.Mst04_ST_&portfolio._&model._seg&seg.;
+		set Mst03_ST_&portfolio._&model._seg&seg.;
+		
+	%if "&model." = "PD" %then %do;
+	  %bucket_&portfolio._pd(score =&dep._h ); 
+		pd_score  = &dep._h_b;
+		ead_score = ead_sc_lr2_em;
+		rr_score = rec_rate_lr_b_em; 
+	%end;
+	%else %if "&model." = "EAD" %then %do;
+		pd_score  = PD_sc_lr_adj2_b_em;
+		ead_score = &dep._h;
+		rr_score = rec_rate_lr_b_em;
+	%end;
+	
+	%else %if "&model." = "LGD" %then %do;
+	  %bucket_&portfolio._lgd(score =&dep._h );  
+		pd_score  = PD_sc_lr_adj2_b_em;
+		ead_score = ead_sc_lr2_em;
+		rr_score = &dep._h_b;
+	%end;		
+		
+		*************Calculate Capital *************;	
+		  if ind_in_default = 1 then do;
+		    capital_axp_v1   = max(0, 1.06 * 0.08 * sum(0,total_bal_amt_em, loc_total_bal_amt_em));
+		  	capital_axp_v2   = max(0, 1.06 * 0.08 * sum(0,total_bal_amt_em, loc_total_bal_amt_em));
+		    end;
+	    else do;
+	    	if portfolio_cd in ("C", "X") then do;
+	    	    %bc_or(pd =pd_score , ead = ead_score, rr = rr_score, capital = capital_axp_ec );
+	    	end;
+	    	else if portfolio_cd = "L" and business_unit_cd = '2' then do;
+	    	    %bc_or(pd =pd_score , ead = ead_score, rr = rr_score, capital = capital_axp_ec );
+	    	end;
+	    	else if portfolio_cd = "L" and acct_ind_QRE_Account_em = 1 then do;
+	    	    %bc_qre(pd =pd_score , ead = ead_score, rr = rr_score, capital = capital_axp_ec );
+	    	end;
+	    	else if portfolio_cd = "L" and acct_ind_QRE_Account_em ~= 1 then do;
+	    	capital_axp_ec   = max(0, 1.06 * 0.08 * max(sum(0,total_bal_amt_em, loc_total_bal_amt_em),total_line_amt_em));	    
+	    	end;
+			end;    			
+			if PD_sc_lr_adj2_b_em = 1 then do;
+	  	  capital_axp_ec  = max(0, 1.06 * 0.08 * ead_score);	
+	  	end;
+	run;
+	
+	proc summary data=tgt.Mst04_ST_&portfolio._&model._seg&seg. nway missing;
+	class insample qtr month_ind;
+	var 
+			capital_axp_em
+			capital_axp_ec
+	 ;
+	output out=cap_calcu_by_qtr(drop=_TYPE_) sum=;
+	run;
+  
+  proc summary data=tgt.Mst04_ST_&portfolio._&model._seg&seg. nway missing;
+  class insample month_ind;
+  var 
+  		capital_axp_em
+  		capital_axp_ec
+   ;
+  output out=cap_calcu_all_qtr(drop=_TYPE_) sum=;
+  run;
+  proc summary data=tgt.Mst04_ST_&portfolio._&model._seg&seg. nway missing;
+  class insample qtr;
+  var 
+  		capital_axp_em
+  		capital_axp_ec
+   ;
+  output out=cap_calcu_all_mth(drop=_TYPE_) sum=;
+  run;  
+  
+	data tgt.S12_Final_Capital_Summ;
+		set cap_calcu_all_qtr(in=a)
+				cap_calcu_all_mth(in=b)
+				cap_calcu_by_qtr(in=c)
+				;
+		if a then qtr = 0;
+		if b then month_ind = 0;
+	run;			
+	
+	ods csv file="&tgt_dir/S12_Final_Capital_Summ.csv";
+	proc print data=tgt.S12_Final_Capital_Summ;
+	run;
+	ods csv close;  			
+%Mend M06_Capital_Calculation; 
+
+	
+%macro bc_qre(pd = , ead = , rr =, capital= );
+   R = 0.04;
+   &capital = (probnorm((probit(&pd)+ sqrt(R)*probit(0.999))/((1-R)**0.5)) - &pd) * sum(1, -&rr) * sum(0, &ead) * 1.06 ;
+%mend bc_qre;
+%macro bc_or(pd = , ead = , rr =, capital=, prod= );
+  R = 0.03 + 0.13*exp(-35 * &pd); 
+  &capital = (probnorm((probit(&pd)+ sqrt(R)*probit(0.999))/((1-R)**0.5)) - &pd) * sum(1, -&rr) * sum(0, &ead) * 1.06 ;   
+%mend bc_or;

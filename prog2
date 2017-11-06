@@ -1,0 +1,5656 @@
+**********#####################################################################*************;
+**********##########       Modeling_Process_Macro_V04       ##########*************;
+**********##########                                  ##########*************;
+**********##########                                    ##########*************;
+**********#####################################################################*************;
+
+**********######################### Macro List ################################*************;
+**********  01. EDD                                                            *************;
+**********      - Data_Dictionary_integration_D05,                    *************;
+**********      - Code Starting Line: 40                                       *************;
+**********  02  EDD Overtime (Quarterly)                                       *************;
+**********      -                                                 *************;
+**********      - Code Starting Line: 409                                      *************;
+**********  03. Num_Char_Rank_Plot_Macro                                       *************;
+**********      -                                               *************;
+**********      - Code Starting Line: 471                                      *************;
+**********  04. Spearman & Pearson Correlation                                 *************;
+**********      - Modified based on Corr_Stepwise_macro_V1,        *************;
+**********      - Code Starting Line: 1203                                     *************;
+**********  05. Correlation Check & Variable Elimination                       *************;
+**********      -                                    *************;
+**********      - Code Starting Line: 1394                                     *************;
+**********  06. Stepwise Selection                                             *************;
+**********      - Modified based on Corr_Stepwise_macro_V1,       *************;
+**********      - Code Starting Line: 1569                                     *************;
+**********  07. Model Validation                                               *************;
+**********      - Validation_PD_EAD_LGD5,   *************;
+**********      - Code Starting Line: 2482                                     *************;
+**********  08. VIF Checking                                                   *************;
+**********      -                                     *************;
+**********      - Code Starting Line: 3607                                     *************;
+**********  09. Final Variable Adjustment                                      *************;
+**********      -                                    *************;
+**********      - Code Starting Line: 3707                                     *************;
+**********  10. Model Scoring                                                  *************;
+**********      -                                           *************;
+**********      - Code Starting Line: 4087                                     *************;
+**********  11. Others                                                         *************;
+**********      - Calendar Year Indocator, Transformation Macro                *************;
+**********      - Code Starting Line: 4195                                     *************;
+**********#####################################################################*************;
+
+**********#####################################################################*************;
+**********##########        01.EDD: Macro for Data Dictionaty V5     ##########*************;
+**********##########                     Gao Xue                     ##########*************;
+**********#####################################################################*************;
+
+********************************************************************************************;
+*****    Change the following settings in macro for outputs:                           *****;
+*****    drv          : the driver data set                                            *****:
+*****    out_name     : the name of the EDD csv file                                   *****;
+*****    out_path     : the path of the EDD csv file                                   *****;
+********************************************************************************************;
+
+options errors=2 nocenter linesize = max pagesize = max;
+options compress=yes mergenoby = error obs=max;
+options macrogen symbolgen;
+
+%macro edd(drv=, out_data=, out_name=, out_path=);
+	
+	data Num_DataVar(keep = _numeric_);
+		set &drv;
+	run;
+	
+	data _NULL_;
+		if 0 then set Num_DataVar nobs = obs;
+		call symputx('no_num_dataset', obs);
+		array num_var (*) _ALL_;
+		call symputx('no_num',dim(num_var));
+	run;
+	
+	data Char_DataVar(keep = _character_);
+		set &drv;
+	run;
+	
+	data _NULL_;
+		set Char_DataVar nobs = obs;
+		array char_var (*) _ALL_;
+		call symputx('no_char_dataset', obs);
+		call symputx('no_char',dim(char_var));
+	run;
+	
+		
+	%if (&no_num ~= 0 and &no_char ~= 0) 	%then %do;
+		%edd_num(drv = Num_DataVar, out_name = &out_name, out_path = &out_path); 
+		%edd_char(drv = Char_DataVar, out_name = &out_name, out_path = &out_path); 
+   
+ 		data edd004_all_stat;
+			set edd003_num_stat_format
+					edd002_char_stat
+					;
+		run;
+ 	
+ 		proc sort data = edd004_all_stat
+ 			   			out  = edd006_all_stat_srt;
+ 		by Variable;
+  	run;
+  %end;
+  
+  %if (&no_num = 0 and &no_char ~= 0) %then %do;
+  	%edd_char(drv = Char_DataVar, out_name = &out_name, out_path = &out_path); 
+  	
+  	proc sort data = edd002_char_stat
+ 			   			out  = edd006_all_stat_srt;
+ 		by Variable;
+  	run;
+  %end;
+  
+  %if (&no_num ~= 0 and &no_char = 0) %then %do;
+  	%edd_num(drv = Num_DataVar, out_name = &out_name, out_path = &out_path);  
+  	
+  	proc sort data = edd003_num_stat_format
+ 			   			out  = edd006_all_stat_srt;
+ 		by Variable;
+  	run;
+  %end;
+  
+  
+  ods output Variables = edd005_VarName; 
+		proc contents data = &drv;
+		run;
+	ods output close;
+	
+	proc sort data = edd005_VarName(keep = num Variable)
+						out  = edd006_VarName_srt;
+	by Variable;
+	run;
+  
+  data edd007_all_stat_Var;
+  	merge edd006_VarName_srt(IN = a)
+  				edd006_all_stat_srt(IN = b)
+  				;
+  	by Variable;
+  	run;
+  
+  proc sort data = edd007_all_stat_Var
+  					out  = &out_data;
+  	by num;
+  run;
+ 	
+ 			   
+	ods csv file="&out_path./&out_name..csv";
+		proc print data= &out_data (drop = Num);
+		run;
+	ods csv close;	
+%mend;
+
+*********************************************************************************************;
+*****   MACRO: EDD for numeric variables in the driver                                  *****;
+*********************************************************************************************;
+
+%macro edd_num( drv=, out_name=, out_path=);
+	%let col = 11;
+	%let len_last_mean = 4;
+	
+	ods output summary=tst001_ods;
+		proc means data=&drv nmiss mean min p1 p5 p25 median p75 p95 p99 max;
+			var _ALL_ ;
+		run;
+	ods output close;
+	
+	ods output Variables = contents_h;
+		proc contents data = &drv;
+		run;
+	ods output close;
+	
+	proc sort data = contents_h(keep = Num Variable Type Len Pos) out = contents_h_s;
+		by num;
+	run;
+	
+	proc transpose data=tst001_ods out=tst001_ods_tps;
+	run;
+	
+	
+	data tst003_ods_tps;
+		set tst001_ods_tps;
+		retain numobs nmiss mean min p1 p5 p25 median p75 p95 p99 max;
+		i+1;
+		numobs = &no_num_dataset;
+		if (i=1 ) then nmiss  =col1;
+		if (i=2 ) then mean   =col1;
+		if (i=3 ) then min    =col1;
+		if (i=4 ) then p1     =col1;
+		if (i=5 ) then p5     =col1;                            
+		if (i=6 ) then p25    =col1;
+		if (i=7 ) then median =col1;	
+		if (i=8 ) then p75    =col1;
+		if (i=9 ) then p95    =col1;
+		if (i=10) then p99    =col1;
+		if (i=11) then max    =col1;
+		
+		if (i= &col) then do;
+			num+1;
+			output;
+			i = 0;
+		end;
+	run;
+	
+	data tst004_num_stat;
+		merge contents_h_s(keep = num Variable Type Len Pos)
+		      tst003_ods_tps(drop =_NAME_ _LABEL_ COL1 i) 
+		      ;
+		by num;
+	run;
+	
+	data tst005_ods_tps_zero;
+		set &drv;
+		retain  num_zero_var_1 -  num_zero_var_&no_num 0;
+		
+		array num_var (*) _ALL_;
+		array num_zero (*) num_zero_var_1 -  num_zero_var_&no_num;
+		
+		do i = 1 to &no_num;
+			if (num_var[i] = 0)	then num_zero[i] = num_zero[i]+1;
+		end;
+	run;
+	
+	data tst006_zero(keep = p_zero_var_:);
+		set tst005_ods_tps_zero;
+		array num_zero (*) num_zero_var_1 -  num_zero_var_&no_num;
+		array p_zero (*)  p_zero_var_1 -  p_zero_var_&no_num;
+		if (_N_ = &no_num_dataset) then do;
+			do i = 1 to &no_num;
+				p_zero[i] = num_zero[i]/&no_num_dataset;
+			end;
+			output;
+		end;
+	run;
+	
+	proc transpose data=tst006_zero out=tst006_zero_vertical;
+	run;
+	
+	data tst006_zero_fmg(drop = _NAME_ rename= (COL1 = pzero));
+		set tst006_zero_vertical;
+		retain num 0;
+		num = num +1;
+	run;
+	
+	data edd001_num_stat(drop = num);
+		retain Variable	Type	Len	Pos	numobs	nmiss pzero pmiss Nunique;
+		merge tst004_num_stat(IN =a)
+		      tst006_zero_fmg(IN=b)
+		      ;
+		by num;
+		pmiss = nmiss/numobs;
+		Nunique = .;
+	run;
+	
+	data edd003_num_stat_format;
+		set edd001_num_stat;
+		length mean_or_top1      $50;
+		length min_or_top2       $50;
+    length p1_or_top3        $50;
+    length p5_or_top4        $50;
+    length p25_or_top5       $50;
+    length median_or_top6    $50;
+    length p75_or_top7       $50;
+    length p95_or_top8       $50;
+    length p99_or_top9       $50;
+    length max_or_top10      $50;
+    
+    mean_or_top1       = put(mean  , 10.4);
+		min_or_top2        = put(min   , 10.4);
+		p1_or_top3         = put(p1    , 10.4);
+		p5_or_top4         = put(p5    , 10.4);
+		p25_or_top5        = put(p25   , 10.4);
+		median_or_top6     = put(median, 10.4);
+		p75_or_top7        = put(p75   , 10.4);
+		p95_or_top8        = put(p95   , 10.4);
+		p99_or_top9        = put(p99   , 10.4);
+		max_or_top10       = put(max   , 10.4);
+		
+		drop min	p1	p5	p25	median	p75	p95	p99	max mean;
+	run;
+
+%mend;
+
+*********************************************************************************************;
+*****   MACRO: EDD for character variables in the driver                                *****;
+*********************************************************************************************;
+
+%macro edd_char( drv=, out_name=, out_path=);
+	
+	data _NULL_;
+		set &drv;
+		array char_var (*) _ALL_;
+		do i = 1 to &no_char;
+			length a $8;
+			length b $100;
+			a = compress('var_'!!i);
+			b = vname(char_var[i]);
+			call symputx(a, b);
+		end;
+	run;
+	
+	ods output Variables = tst000_VarCon;
+	proc contents data = &drv;
+	run;
+	ods output close;
+	
+	%macro loop_Char_Info;
+	 	%do i=1 %to &no_char;
+	 		proc freq data = &drv;
+	 			tables &&var_&i  /list missing out = tst001_CharVar_&i;
+	 		run;
+	 %end;
+	 
+	 %do i=1 %to &no_char;
+	 		proc sort data = tst001_CharVar_&i;
+	 			by descending count;
+	 		run;
+	 %end;
+	 
+	 %do i=1 %to &no_char;
+	 		data tst002_CharVar_toplow_&i;
+	 			set tst001_CharVar_&i nobs=obs;
+	 			  ind = 1;
+	 				if (_N_<=10)	then output;
+	 		run;
+	 		
+	 	  data tst002a_CharVar_toplow_&i
+	 	       tst002b_CharVar_toplow_&i;
+	 			set tst001_CharVar_&i nobs=obs;
+	 				if missing(&&var_&i)then do;
+	 				  ind = 1;
+	 				  nmiss = count;
+	 				  pmiss = percent/100;
+	 				  output tst002a_CharVar_toplow_&i;
+	 				end;
+	 				if _N_ = obs	then do;
+	 					 ind = 1;
+	 					Nunique = obs; 
+	 				output tst002b_CharVar_toplow_&i;
+	 			end;
+	 		run;
+	 %end;
+	 
+	 %do i=1 %to &no_char;
+	 
+  	data tst002c_one_row_&i(drop = ind);
+  	  merge tst002_CharVar_toplow_&i(in=a)
+  	        tst002a_CharVar_toplow_&i(keep = ind nmiss pmiss)
+  	        tst002b_CharVar_toplow_&i(keep = ind Nunique);
+  	        by ind;
+  	        if (a);
+  	run;
+	   	      
+	  data tst003_one_row_&i(keep = numobs pmiss nmiss top: num Nunique);
+	    set tst002c_one_row_&i nobs=obs;
+	    	length top1 - top10 $50;
+	    	retain top1 top2 top3 top4 top5 top6 top7 top8 top9 top10;
+	    		
+	    	if _N_=1              then top1    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=2         then top2    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=3         then top3    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=4         then top4    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=5         then top5    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=6         then top6    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=7         then top7    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=8         then top8    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=9         then top9    =compress(&&var_&i!!'::'!!count);
+	    	else if _N_=10        then top10   =compress(&&var_&i!!'::'!!count);
+	    	
+	    	if (_N_=obs) then do;
+	    			numobs = &no_char_dataset;
+						num = &i;
+						output;
+				end;
+	    
+	    run;
+	 %end;
+	%mend;
+	
+	%loop_Char_info;
+	
+	
+	data tst004_merge;
+	 	set tst003_one_row_:;
+	run;
+	 			
+	proc sort data = tst000_VarCon(keep = Num Variable Type Len Pos) 
+						out  = tst005_VarCon_srt;
+		by num;
+	run;
+	
+	proc sort data = tst004_merge out = tst005_merge_srt;
+		by num;
+	run;
+	
+	data edd002_char_stat(drop = num rename = (
+						top1    =  mean_or_top1    
+						top2 	  =  min_or_top2     
+						top3 	  =  p1_or_top3      
+						top4 	  =  p5_or_top4      
+						top5 	  =  p25_or_top5     
+						top6 	  =  median_or_top6  
+						top7 	  =  p75_or_top7      
+						top8 	  =  p95_or_top8      
+						top9 	  =  p99_or_top9      
+					  top10   =  max_or_top10     
+					));
+		retain Variable	Type	Len	Pos	numobs	nmiss pzero pmiss Nunique;
+		merge tst005_VarCon_srt(IN = a)
+					tst005_merge_srt(IN = b)
+					;
+			by num;
+			
+			if nmiss = . then nmiss	= 0;
+			if pzero = . then pzero	= 0;
+			if pmiss = . then pmiss = 0;
+
+	run;
+%mend;
+
+**********######################################################################*************;
+**********##########            02. EDD Overtime (QTR)                ##########*************;
+**********##########                Jipeng Xiong                      ##########*************;
+**********######################################################################*************;
+
+%Macro EDD_Overtime_QTR (indata=, ref_mth_var=, start_mth=, end_mth=,outfile=,out_path=);
+	
+  data _NULL_;
+    start_qtr = compress(int(mod(&start_mth,100)/3-0.1)+1);
+  	end_qtr   = compress(int(mod(&end_mth,100)/3-0.1)+1);
+    Call Symput('start_qtr',start_qtr);
+    Call Symput('end_qtr',end_qtr);       
+	run;	
+
+  %Macro qtr_edd;
+        data qtr_&j.Q&K;
+      	   set &indata;
+      	   if (int(&ref_mth_var/100)=&j) and (int(mod(&ref_mth_var,100)/3-0.1)+1 = &k);
+      	run;
+      	
+      	%edd (drv = qtr_&j.Q&K , out_data= edd008_all_stat_final, out_name = qtr_all_edd ,out_path =&out_path);      	
+      	data qtr_sub_&j.Q&K; set edd008_all_stat_final; qtr_ind = &j.&K; run; 
+  %Mend;  	
+	
+	%DO j = &start_yr %TO &start_yr;	    
+     %DO k = &start_qtr %TO 4;
+         %qtr_edd;
+     %END;
+  %END;
+  
+	%DO j = &start_yr+1 %TO &end_yr-1;	    
+     %DO k = 1 %TO 4;
+         %qtr_edd;
+     %END;
+  %END;  
+  
+	%DO j = &end_yr %TO &end_yr;	    
+     %DO k = 1 %TO &end_qtr;
+         %qtr_edd;
+     %END;
+  %END; 
+      	
+  %edd (drv = &indata, out_data= edd008_all_stat_final,out_name = qtr_all_edd ,out_path =&out_path);
+  data qtr_sub_0; set edd008_all_stat_final; qtr_ind = 0; run; 
+      	     
+  data edd;
+     set qtr_sub_:;
+  run;   
+  ods csv file="&outfile";
+  proc print data=edd;
+  run;
+  ods csv close;   
+
+%Mend EDD_Overtime_QTR;
+
+**********######################################################################*************;
+**********##########       03. Num_Char_Rank_Plot_Macro               ##########*************;
+**********##########  Num_Char_Rank_Plot_Macro_V4, Jipeng Xiong       ##########*************;
+**********##########                02/28/2013                        ##########*************;     
+**********######################################################################*************;
+
+**********#################### EXAMPLE ###########################*************;
+**********                                                        *************;
+**********   %RANK_PLOT(libname=dat,                              *************;
+**********   	          dataset=jxmod_cust_mst_qre_28,            *************;
+**********   	          selected_vars= &independent_var_list,     *************;
+**********   	          dep_var= dependent_var,                   *************;   
+**********   	          End_Bucket= 3 (No. of split buckets       *************;
+**********                             for first/last group)      *************;
+**********   	          LOG=1 or 0,(1: logarithm 0: linear)       *************;
+**********   	          q= group_number,                          *************;
+**********   	          wgt= weight,(wgt=1: no weight)            *************;
+**********   	          sum_out_xls=&tgt_dir./jxmod_cust_mst)     *************;
+**********   	                                                    *************;
+**********########################################################*************;
+
+***************************************************************************;
+************************ Rank Plot Main Macro *****************************;
+***************************************************************************;
+%Macro RANK_PLOT (libname=,     dataset=,  selected_vars=,  dep_var=,    
+	                End_bucket=,  LOG=  ,  q=            ,   wgt=   ,    sum_out_xls= );
+	
+	%LET Cnt=1;
+  %DO %WHILE(%SCAN(&selected_vars,&Cnt) NE); 
+      %LET Cnt=%EVAL(&Cnt+1);
+  %END;
+  %LET nvars=%EVAL(&Cnt-1);
+  %LET infile = &libname..&&dataset;
+  
+  %LET N2C_C= 1; /* always transform Num to Char */
+  
+**********###############   Create Variable List      ###############**********;  
+  %DO i = 1 %TO &nvars;
+    Data  _var&&i;
+    	length var_name $33.;
+    var_name=" %scan(&selected_vars,&i) ";
+    Call Symput('var_name_0',var_name);
+    var_order = &i;
+    run;
+    
+      proc summary data=&infile (keep=&var_name_0) nway missing;
+       	class &var_name_0;
+         output out=var_name_&&i;
+      run;
+     
+      Data var_name_&&i;
+     	 set var_name_&&i nobs=numobs;
+     	 if numobs>20 then n2c_ind=0;
+     	 else n2c_ind=1;
+     	
+     	 Call Symput('n2c_ind',n2c_ind);
+      run;
+           
+      Data _var&&i;
+       set _var&&i;
+       n2c_ind=&n2c_ind;
+      run;
+  %END; 	
+
+ data var_list;
+ 	set 
+ 	 	 %DO i = 1 %TO &nvars;
+ 	 	 _var&&i
+     %End;
+  ;
+ var_name = compress( upcase(var_name)); 
+ run;
+
+**********###############   Get Selected Variables      ###############**********; 
+proc sql; 
+ create table selected_var_dataset as
+ select a.name as  var_name, a.type as var_type                                                                                                                                
+    from dictionary.columns as a                                                                                                                                                             
+ where a.libname=%upcase("&libname")  and a.memname=%upcase("&dataset");
+ quit; 
+ 
+ data selected_var_dataset;
+ 	set selected_var_dataset;
+ 	var_name = compress( upcase(var_name)); 
+ run;
+
+ proc sort data = selected_var_dataset nodupkey ;
+ 	by var_name;
+ run;
+ proc sort  data=  var_list nodupkey;
+	by var_name;
+ run;
+
+**********###############  Get Selected Variable Types   ###############**********; 
+ data var_typ_list;
+ 	merge var_list(in = a)
+ 	      selected_var_dataset (in = b)
+ 	     ;
+  by var_name;	     
+ 	if(a);
+
+ 	n2c_c=&N2C_C;
+ 	if n2c_c ^= 1 then do;
+ 		n2c_ind = 0;
+ 	end;
+ 	
+ 	if ((n2c_ind = 1) and (var_type = "char")) then n2c_ind = 0; 	
+ 	if n2c_ind=1 then do;  
+ 	  var_type="char";
+ 	end;
+ 	 	
+ 	drop n2c_c;
+ run;
+
+ proc sort data = var_typ_list;
+ 	by var_order;
+ run;
+
+ proc sql;                                                                                                                                                                              
+  select var_type into :type_var1 - :type_var&nvars   	                                                                                                                            
+  from   var_typ_list ;
+  select n2c_ind  into :n2c_ind1  - :n2c_ind&nvars         
+  from   var_typ_list                                                                                                                                                         
+  order by var_order;                                                                                                                                   
+ quit;
+
+**********############### Set Weight Option ###############**********;
+
+  %IF &wgt=1 %THEN %DO;
+    data infile_wgt;
+  	  set &infile;
+  	  wgt=1;
+  	run;
+  %END;
+  %ELSE %DO;
+    data infile_wgt;
+  	  set &infile;
+  	  wgt=&wgt;
+  	  drop &wgt;
+  	run;
+  %END;  
+
+**********############### Identify Char and Bin and run summary ###############**********;
+ %DO i = 1 %TO &nvars;  
+ 	
+   %IF &&type_var&i = char %THEN %DO;
+    %Single_Char_Sum2(infile= infile_wgt, var=%scan(&selected_vars,&i), dep_var = &dep_var, var_sq = &i, w = wgt);
+   %END;   
+   %ELSE %DO;
+    %Single_Bin_Sum2(infile=infile_wgt, q= &q, var=%scan(&selected_vars,&i), dep_var = &dep_var, var_sq = &i, w = wgt);
+   %END;
+   
+ %END;
+
+**********############### Prepare dataset for Output Results ###############**********; 
+ data all_vars_grp_cnt_sum;
+   length var_name $33.; 
+  set 
+  %DO i = 1 %TO &nvars;
+     var_&&i._grp_cnt 
+  %END;
+  ;
+  run;
+  
+ data var_typ_list;
+   length var_name $33.;
+ 	 set var_typ_list; 	
+ 	 var_name = compress(upcase(var_name)); 	  	  
+ run;  
+  
+ proc sort data = var_typ_list;
+ 	by var_name;
+ run;
+ 
+ data all_vars_grp_cnt_sum;
+  length var_name $33.;
+ 	set all_vars_grp_cnt_sum;
+ 	var_name = compress(upcase(var_name));
+ run;
+ 
+ proc sort data = all_vars_grp_cnt_sum;
+ 	by var_name;
+ run;
+ 
+ data all_vars_grp_cnt_sum_v1;
+ 	merge all_vars_grp_cnt_sum(in = a)
+ 	      var_typ_list (in = b)
+ 	      ;
+ 	by var_name;
+ 	if(a);
+ 	
+ 	if n2c_ind=1 then var_name=compress(""!!var_name);
+ 	drop n2c_ind;
+ run;
+
+ 
+ proc sort data = all_vars_grp_cnt_sum_v1;
+ 	by var_order;
+ run;
+ 
+**********############### Output Results ###############**********;      
+ data overall_vars_grp;
+	dataname = "&dataset" ;
+	chart_vars_nbr = &nvars;
+ run;
+
+ ods html file="&sum_out_xls..xls";
+
+ proc print data= overall_vars_grp ; 
+	title "Vars Count";                                                                                                                                                                                        
+ run; 
+
+ data all_vars_grp_cnt_sum_v1;
+	retain var_name var_type  var_grp_cnt miss_inputation;
+	set all_vars_grp_cnt_sum_v1;
+	row_location="";
+ run;
+
+ proc print data= all_vars_grp_cnt_sum_v1(drop = var_order) ; 
+	title "Variable Grouping Summary";                                                                                                                                                                                        
+ run; 
+
+ %DO i = 1 %TO &nvars;
+    %print2(  var=%scan(&selected_vars,&i), var_sq = &i);
+ %END;
+ 
+ ods html close;
+
+%Mend RANK_PLOT;
+
+***************************************************************************;
+************************ Char Summary Macro *******************************;
+***************************************************************************;
+%Macro Single_Char_Sum2(infile=,  var=, dep_var =,var_sq = , w= , N_or_C=);
+                
+ data temp ;
+  set &infile (keep = &var  &dep_var &w );
+  T_dep_var = &dep_var*&w ;
+  /*&var = Put (&var,3.);*/
+  if &var="." then &var="";
+ run ;
+                           
+ proc summary data = temp nway missing;
+	class
+	&var
+	;
+	var
+	T_dep_var
+	&w
+	;
+	output out = var_&&var_sq._summary (drop = _type_) 
+	sum(T_dep_var) = dep_var_tot
+	sum(&w) = tot_w ;
+ run;	
+
+ data var_&&var_sq._summary(drop = dep_var_tot tot_w) ;
+  retain bin_q &var _FREQ_ dep_var_avg;
+  set var_&&var_sq._summary ;
+ 
+  bin_q=_N_-1;
+  dep_var_avg = dep_var_tot/tot_w ;
+  
+  if (dep_var_avg <= 0) or (dep_var_avg = 1) then log_dep_var_avg=.;
+  else log_dep_var_avg = LOG(dep_var_avg)-LOG(1-dep_var_avg);       
+  miss_inputation="               ";
+ run ;
+
+**********############### Char Missing Inputation ###############**********;
+ proc sort data=var_&&var_sq._summary out=var_&&var_sq._summary_1; by &var;run;
+
+ data  tp2_char_missing_&&var_sq;
+	set var_&&var_sq._summary_1;		
+	if &var="";
+ run;
+
+**********############### Get missing obs for inputation ###############**********;
+%Let missing_ind=.;
+
+ data _NULL_;
+	set  tp2_char_missing_&&var_sq end=end_ind;	
+	if end_ind then do;
+  Call Symput('missing_ind',put(_N_,best12.));
+  end;	 	 	 	 	
+ run; 	
+
+**********############### Missing Value Inputation ###############**********;
+%IF &missing_ind>0 %THEN %DO;
+
+ data  var_&&var_sq._summary_2;
+	set var_&&var_sq._summary_1;
+    bin_q=_N_-1;
+  if &var="" then bin_q = -999;    
+ run;
+	 
+ proc sort data= var_&&var_sq._summary_2; by bin_q; run; 
+	 
+ data  miss_input_rst_&&var_sq; 	
+	set  var_&&var_sq._summary_2 nobs=numobs;
+    format value_for_miss $30.;	 	
+	  retain bad_rate_miss value_for_miss dev;
+	if bin_q = -999 then do;
+                 bad_rate_miss = dep_var_avg;
+                 value_for_miss=&var;
+                 dev=.;
+                 end;
+	else if bin_q = 1 then do;
+            value_for_miss = &var;
+            dev=abs(dep_var_avg - bad_rate_miss);
+          end;
+	else if abs(dep_var_avg - bad_rate_miss)<dev then do;
+	     value_for_miss = &var;
+            dev=abs(dep_var_avg - bad_rate_miss);
+	end;
+	
+	Call Symput('miss_input_value',value_for_miss);
+run;
+
+**********############### Combine Char Missing Inputed Population ###############**********;        
+ data var_&&var_sq._summary; 
+   set  var_&&var_sq._summary_2;     
+   if &var = "" or . then &var = "&miss_input_value";
+ run;
+    
+ data var_&&var_sq._summary;
+ 	retain bin_q &var _FREQ_ dep_var_avg;
+  set var_&&var_sq._summary;
+  
+  if (dep_var_avg <= 0) or (dep_var_avg = 1) then log_dep_var_avg=.;
+  else log_dep_var_avg = LOG(dep_var_avg)-LOG(1-dep_var_avg);       
+        
+  miss_inputation ="&miss_input_value";
+    
+  if miss_inputation="" then miss_inputation =&miss_input_value;
+  keep bin_q &var _FREQ_ dep_var_avg log_dep_var_avg miss_inputation;
+    
+ run;
+   	   
+ proc sort data = var_&&var_sq._summary;by bin_q;run;
+
+%END;
+
+**********############### Char LOG or Linear ###############**********;  
+%IF &LOG=1 %THEN %DO;
+  data var_&&var_sq._summary (drop=dep_var_avg);
+  	set var_&&var_sq._summary;
+  run;
+%END;
+%ELSE %DO;
+  data var_&&var_sq._summary (drop=log_dep_var_avg);
+  	set var_&&var_sq._summary;
+  run;  
+%END;
+
+ proc sql;
+	create table  var_&&var_sq._grp_cnt 
+	as select "&var           " as var_name,count(*) as var_grp_cnt, max(miss_inputation) as  miss_inputation
+	from  var_&&var_sq._summary;
+ quit;
+	
+%Mend Single_Char_Sum2;	
+
+***************************************************************************;
+************************ Bin and Summary Macro ****************************;
+***************************************************************************;
+%Macro Single_Bin_Sum2(infile=, q=, var=, dep_var = ,var_sq =, w= );
+	
+ proc sort data=&infile.(keep = &dep_var &var &w)  out= temp;                                                                                        
+  by &var;                                                                                                                  
+ run;             
+
+**********############### Splite population into missing, zero and value parts ###############**********;  
+ data _tp1_&&var_sq 
+      _tp2_&&var_sq
+      _tp3_&&var_sq;
+  set temp;
+     T_dep_var = &dep_var*&W ;         
+     if &var = . then output _tp2_&&var_sq;
+     else if &var = 0 then output _tp3_&&var_sq;
+     else output _tp1_&&var_sq;      
+ run;
+
+**********############### Calculate Original non-missing Bin ###############**********;
+ data  _bin_v1;                                                                                                              
+  set  _tp1_&&var_sq nobs=numobs;                                                                                                 
+  bin_q=floor(_n_*&q/(numobs+1))+1; 
+                                                                                                                                                                                              
+  retain tmpgrp 1 bin_r;                                                                                                   
+  if _n_=1 then bin_r=&var;                                                                                                
+  if bin_q=tmpgrp then bin_r=bin_r;                                                                                      
+  else do;                                                                                                                  
+      tmpgrp=bin_q;                                                                                                        
+      bin_r=&var;                                                                                                          
+  end;                                                                                                                      
+  drop tmpgrp;
+   T_indep_var =  &var*&W ;                                                                                                       
+ run;      
+                                                                                                                    
+ proc summary data =  _bin_v1 nway missing;
+	class
+	bin_q
+	bin_r  
+	;
+	output out = var_&&var_sq._summary2(drop = _type_)
+	sum(T_dep_var)=dep_var_tot
+	sum(T_indep_var )=indep_var_tot
+	sum(&w) = w_tot
+	;
+ run;
+
+**********############### Calculate missing Bin Group ###############**********;
+ proc summary data =  _tp2_&&var_sq nway missing;
+	class
+	&var  
+	;
+	output out = _tp2(drop = _type_)
+	sum(T_dep_var)=dep_var_tot
+	sum(&w) = w_tot
+	;
+ run;
+
+**********############### Calculate Zero Bin Group ###############**********;
+ proc summary data =  _tp3_&&var_sq nway missing;
+	class
+	&var  
+	;
+	output out = _tp3 (drop = _type_)
+	sum(T_dep_var)=dep_var_tot
+	sum(&w) = w_tot
+	;
+ run;
+
+**********############### Combine Original Bin Group ###############**********;
+ data _tp2_bin; set _tp2; bin_q = -999; bin_r = .;    format dep_var_avg 12.6 ;    dep_var_avg = dep_var_tot/w_tot ;     drop &var dep_var_tot  w_tot; run;
+ data _tp3_bin; set _tp3; bin_q = 0 ; bin_r = 0;      format dep_var_avg 12.6 ;    dep_var_avg = dep_var_tot/w_tot ; indep_var_avg = 0;    drop &var dep_var_tot  w_tot; run;
+
+ data var_&&var_sq._summary3;
+  set var_&&var_sq._summary2;
+   format dep_var_avg 12.6 ;
+   format indep_var_avg 12.6 ;  
+   dep_var_avg = dep_var_tot/w_tot ;
+   indep_var_avg = indep_var_tot/w_tot ;
+ run;
+
+**********############### Group Same Value for Num Variables ###############**********;
+
+data grp_other;
+	set var_&&var_sq._summary3; 
+	grp_obs_cnt=_FREQ_;
+run;
+
+proc summary data=grp_other nway missing;
+  class indep_var_avg;
+  var   bin_r
+        dep_var_avg;
+  weight _FREQ_;
+  output out=grp_other_weight mean()=;
+run;
+
+proc summary data=grp_other nway missing;
+	class indep_var_avg;
+	var   grp_obs_cnt;
+  output out=grp_other_obs_cnt sum()=;
+run;
+
+data grp_summary3;
+	merge grp_other_weight (in=a)
+	      grp_other_obs_cnt (in=b);
+	by indep_var_avg;
+	
+	bin_q=_N_;
+run;
+
+data grp_&&var_sq._summary3;
+	set grp_summary3;
+	by bin_q;
+	_FREQ_=grp_obs_cnt;
+	
+  drop _TYPE_ grp_obs_cnt;
+run;
+
+**********############### Split First/Last Buckets ###############**********;
+
+proc sort data=grp_&&var_sq._summary3 out=grp_&&var_sq._sum;by bin_r;run;
+
+data new_bin_v1;
+	merge _bin_v1(in=a drop=bin_q)
+	      grp_&&var_sq._sum (in=b keep=bin_r bin_q)
+	      ;
+	by bin_r;
+	if (a);
+run;
+
+**************** Define first/last buckets Info ********************;
+data mid_buckets;
+	set grp_&&var_sq._summary3 end=end_ind;
+	if bin_q=1 then do;
+  	call symput('first_grp_cnt', _FREQ_); 
+  	call symput('first_bin_q', bin_q);
+  end;		
+  else if end_ind then do;
+  	call symput('last_grp_cnt', _FREQ_); 
+  	call symput('last_bin_q', bin_q);
+  end;
+  else output mid_buckets;
+  
+run;
+
+**************** Get first/last bin buckets ********************;
+proc sort data=new_bin_v1 out=descend_org_grp ;by descending &var descending bin_q;run;
+
+data first_bucket_obs;
+	set new_bin_v1 (obs=&first_grp_cnt) end=end_ind;
+	if (end_ind=1 and &var = bin_r) then Call symput('first_bucket_ind', 0);
+	else Call symput('first_bucket_ind', 1);
+run;
+
+data last_bucket_obs;
+	set descend_org_grp (obs=&last_grp_cnt) ;
+run;
+
+proc sort data=last_bucket_obs; by &var;run;
+
+data last_bucket_obs;
+	set last_bucket_obs end=end_ind;
+	if (end_ind=1 and &var = bin_r) then Call symput('last_bucket_ind', 0);
+	else Call symput('last_bucket_ind', 1);
+
+run;	
+
+**************** Split first bucket ********************;
+
+data splitted_first_bucket_obs;
+	set first_bucket_obs(drop=bin_r) nobs=numobs;	
+	
+	if &first_bucket_ind=1 then bin_q=floor(_n_*&End_bucket/(numobs+1))+1;
+	else  bin_q=1;
+	
+	retain tmpgrp 1 bin_r;
+                                                                                                   
+  if _n_=1 then bin_r=&var;                                                                                                
+  if bin_q=tmpgrp then bin_r=bin_r;                                                                                      
+  else do;                                                                                                                  
+      tmpgrp=bin_q;                                                                                                           
+      bin_r=&var;                                                                                                          
+  end;                                                                                                                      
+  drop tmpgrp;
+  T_indep_var =  &var*&W ; 
+run;
+
+proc summary data=splitted_first_bucket_obs nway missing;
+	class
+	bin_q
+	bin_r  
+	;
+	output out = splitted_first_bucket
+	sum(T_dep_var)=dep_var_tot
+	sum(T_indep_var )=indep_var_tot
+	sum(wgt) = w_tot
+	;
+ run;
+
+**************** Split last bucket ********************;
+data splitted_last_bucket_obs;
+	set last_bucket_obs(drop=bin_r) nobs=numobs;	
+	
+	if &last_bucket_ind=1 then bin_q=floor(_n_*&End_bucket/(numobs+1))+1;
+	else  bin_q=&last_bin_q;
+	
+	retain tmpgrp 1 bin_r;
+                                                                                                   
+  if _n_=1 then bin_r=&var;                                                                                                
+  if bin_q=tmpgrp then bin_r=bin_r;                                                                                      
+  else do;                                                                                                                  
+      tmpgrp=bin_q;                                                                                                            
+      bin_r=&var;                                                                                                          
+  end;                                                                                                                      
+  drop tmpgrp;
+  T_indep_var =  &var*&W ; 
+run;
+
+proc summary data=splitted_last_bucket_obs nway missing;
+	class
+	bin_q
+	bin_r  
+	;
+	output out = splitted_last_bucket
+	sum(T_dep_var)=dep_var_tot
+	sum(T_indep_var )=indep_var_tot
+	sum(wgt) = w_tot
+	;
+ run;
+
+**************** Group new buckets ********************;
+data final_non_miss_bucket;
+	set splitted_first_bucket (in=a)
+	    mid_buckets (in=b)
+	    splitted_last_bucket (in=c);
+	if (b) then bin_q=(bin_q + &End_bucket -1);
+	else if (c) then bin_q=(bin_q + &End_bucket + &last_bin_q -1);
+	else bin_q=bin_q;
+	
+	if (a) or (c) then do;
+	   format dep_var_avg 12.6 ;
+     format indep_var_avg 12.6 ;  
+     dep_var_avg = dep_var_tot/w_tot ;
+     indep_var_avg = indep_var_tot/w_tot ;
+  end;
+   
+  drop _TYPE_ dep_var_tot w_tot indep_var_tot ;
+	
+run;
+	
+**********############### Get Non-Missing Var Result ###############**********;
+ data var_&&var_sq._summary; 
+  set final_non_miss_bucket
+      _tp2_bin
+      _tp3_bin;
+  if (dep_var_avg <= 0) or (dep_var_avg = 1) then log_dep_var_avg=.;
+  else log_dep_var_avg = LOG(dep_var_avg)-LOG(1-dep_var_avg); 
+     
+  miss_inputation="               ";
+ run;
+
+ proc sort data = var_&&var_sq._summary;by bin_q;run;
+
+
+**********############### Get missing obs for inputation ###############**********;
+%Let missing_ind=.;
+
+data _NULL_;
+	set _tp2_&&var_sq end=end_ind;	
+	if end_ind then do;
+	  Call Symput('missing_ind',put(_N_,best12.));
+  end;	 	 	 	 	
+run; 	
+
+**********############### Missing Value Inputation ###############**********;
+%IF &missing_ind>0 %THEN %DO;
+
+	 data  miss_input_&&var_sq;
+	 	set grp_&&var_sq._summary3
+	 	    _tp2_bin
+	 	    _tp3_bin;
+	 	drop dep_var_tot w_tot indep_var_tot ;
+	 run;
+	 
+  proc sort data= miss_input_&&var_sq; by bin_q; run; 
+  		 
+	 data  miss_input_rst_&&var_sq;
+	 	set  miss_input_&&var_sq;
+	  retain bad_rate_miss value_for_miss dev;
+	if bin_q = -999 then do;
+                 bad_rate_miss = dep_var_avg;
+                 value_for_miss=.;
+                 dev=.;
+                 end;
+	else if bin_q = 1 then do;
+            value_for_miss = indep_var_avg;
+            dev=abs(dep_var_avg - bad_rate_miss);
+          end;
+	else if abs(dep_var_avg - bad_rate_miss)<dev then do;
+	     value_for_miss = indep_var_avg;
+            dev=abs(dep_var_avg - bad_rate_miss);
+	end;
+	
+  Call Symput('miss_input_value',value_for_miss);
+   	
+ run;
+ 
+**********############### Combine Missing Inputed Population ###############**********;	 
+   data var_&&var_sq._summary; 
+     set grp_&&var_sq._summary3 (in=a)
+         _tp2_bin (in=b)
+         _tp3_bin (in=c);
+         
+     if (b) then indep_var_avg = &miss_input_value;
+     
+    if (dep_var_avg <= 0) or (dep_var_avg = 1) then log_dep_var_avg=.;
+    else log_dep_var_avg = LOG(dep_var_avg)-LOG(1-dep_var_avg);   
+     miss_inputation = put(&miss_input_value,18.6);
+        
+     drop dep_var_tot w_tot indep_var_tot ;
+   run;
+   
+   proc sort data = var_&&var_sq._summary;by bin_q;run;
+	
+%END;  
+ 	
+**********############### LOG or Linear ###############**********;	
+%IF &LOG=1 %THEN %DO;
+  data var_&&var_sq._summary (drop=dep_var_avg);
+  	retain bin_q bin_r _FREQ_ indep_var_avg;
+  	set var_&&var_sq._summary;
+  run;
+%END;
+%ELSE %DO;
+  data var_&&var_sq._summary (drop=log_dep_var_avg);
+  	retain bin_q bin_r _FREQ_ indep_var_avg;
+  	set var_&&var_sq._summary;
+  run;  
+%END;
+
+  	
+proc sql;
+	create table  var_&&var_sq._grp_cnt 
+	as select "&var                 " as var_name,count(*) as var_grp_cnt, max(miss_inputation) as  miss_inputation
+	from  var_&&var_sq._summary;
+quit;
+
+%Mend Single_Bin_Sum2;
+
+***************************************************************************;
+************************ Print Macro **************************************;
+***************************************************************************;
+%Macro print2 (var = ,var_sq = );
+	
+	%IF &&n2c_ind&var_sq = 1 %THEN %DO;	
+      proc print data= var_&&var_sq._summary (drop=miss_inputation) ; 
+	      title "&var ";
+	    run;  
+	    data var_nm_order_&&var_sq.;
+		     set var_&&var_sq._summary(drop=miss_inputation) ; 
+		     indep_var_avg = &var;
+		     variable = "&var ";
+		     var_type = "char";
+		     rename &var = bin_r;
+	    run;
+	%END;
+	%ELSE %DO;	
+      proc print data= var_&&var_sq._summary (drop=miss_inputation) ; 
+	      title "&var ";
+	    run; 
+	    data var_nm_order_&&var_sq.;
+		     set var_&&var_sq._summary(drop=miss_inputation) ; 
+		     variable = "&var ";
+		     var_type = "numb";
+	    run; 
+	%END;	
+	                                                                                                                                                                              
+%Mend print2;
+
+**********#####################################################################*************;
+**********##########              04. Correlation Check              ##########*************;
+**********##########             Created by Jonathan Zuo             ##########*************;
+**********##########             Modified by Jipeng Xiong            ##########*************;
+**********#####################################################################*************;
+
+********************************************************************************************;
+****                               Spearman Correlation                                 ****;
+********************************************************************************************;
+
+** rank by corr **;
+
+%macro Spearman_Corr_Check (indata=, indata_subset=, outdata=, dep_var=, normal_vars=, piece_vars= ); 
+options mergenoby=nowarn;
+
+%let f=1; 
+%do %while(%scan(&normal_vars,&f) ne); 
+    %let f=%eval(&f+1);
+%end;
+%let obs_cnt=%eval(&f-1);
+
+** Normal vars **;
+ods listing close;
+ods output SpearmanCorr=m01_spearman_normal;
+proc corr data=&indata (where=(&indata_subset)) spearman;
+  var &normal_vars;
+  with &dep_var;
+run;
+ods listing;
+ods output close;
+quit;run;
+
+proc sql;
+	create table m01_spearman_base (
+	   Variable char(32)
+	  ,corr_spearman1 num
+	);
+quit;
+
+proc transpose data=m01_spearman_normal (drop=Variable) out=m01_spearman_normal_t 
+	name=Variable prefix=corr_spearman;
+run;
+
+data m01_spearman_normal_t;
+	format Variable $32.;
+	set m01_spearman_normal_t;
+run;
+
+proc append base=m01_spearman_base data=m01_spearman_normal_t force;
+run;
+
+
+** scan all piecewise variables **;
+%let c=1; 
+%do %while(%scan(&piece_vars,&c) ne); 
+    %let c=%eval(&c+1);
+%end;
+%let nvars=%eval(&c-1);
+
+** run proc corr on positive sample **;
+%do i = 1 %to &nvars;
+data _null_;
+	length var_name $33.;            
+  var_name=" %scan(&piece_vars,&i) ";
+  call symput('thevar', var_name); 
+run;
+
+data _tmp;
+	set &indata;
+	where &indata_subset and &thevar>0;
+	keep &dep_var &thevar;
+run;
+
+ods listing close;
+ods output spearmancorr=piece_spearman;
+proc corr data= _tmp spearman;
+  var &thevar;
+  with &dep_var;
+run;
+ods listing;
+ods output close;
+
+proc transpose data=piece_spearman (drop=Variable) out=piece_spearman name=Variable prefix=corr_spearman;
+run;
+
+proc append base=m01_spearman_base data=piece_spearman force;
+run;
+
+%end; 
+
+data m01_spearman_base;
+	set m01_spearman_base;
+	if _N_ <=2 * &obs_cnt.;
+run;
+
+data tmp1 tmp2;
+	set m01_spearman_base;
+	if _N_ > &obs_cnt. then output tmp2;
+	else output tmp1;
+run;
+
+data tmp1;
+	set tmp1(rename=(corr_spearman1=corr_spearman));
+	abs_corr_spearman=abs(corr_spearman);
+  if abs_corr_spearman<0 then abs_corr_spearman=0;
+run;
+
+data &outdata;
+	merge tmp1 tmp2(rename=(Variable=Variable_p corr_spearman1=p_spearman));
+	drop Variable_p;
+	if p_spearman=. then delete;
+run;
+
+options mergenoby=error;
+
+%mend Spearman_Corr_Check;
+
+********************************************************************************************;
+****                               Pearson Correlation                                  ****;
+********************************************************************************************;
+
+%macro Pearson_Corr_Check (indata=, indata_subset=, outdata=, dep_var=, wgt=, normal_vars=, piece_vars= ); 
+options mergenoby=nowarn;
+
+%let f=1; 
+%do %while(%scan(&normal_vars,&f) ne); 
+    %let f=%eval(&f+1);
+%end;
+%let obs_cnt=%eval(&f-1);
+
+** Normal vars **;
+ods listing close;
+ods output PearsonCorr = jx01_pearson_normal;
+proc corr data=&indata (where=(&indata_subset));
+  var &normal_vars;
+  with &dep_var;
+  weight &wgt;
+run;
+ods listing;
+ods output close;
+quit;run;
+
+proc sql;
+	create table jx02_pearson_base (
+	   Variable char(32)
+	  ,corr_pearson1 num
+	);
+quit;
+
+proc transpose data=jx01_pearson_normal (drop=Variable) out=jx01_pearson_normal_t 
+	name=Variable prefix=corr_pearson;
+run;
+
+data jx01_pearson_normal_t;
+	format Variable $32.;
+	set jx01_pearson_normal_t;
+run;
+
+proc append base=jx02_pearson_base data=jx01_pearson_normal_t force;
+run;
+
+** scan all piecewise variables **;
+%let c=1; 
+%do %while(%scan(&piece_vars,&c) ne); 
+    %let c=%eval(&c+1);
+%end;
+%let nvars=%eval(&c-1);
+
+** run proc corr on positive sample **;
+%do i = 1 %to &nvars;
+data _null_;
+	length var_name $33.;            
+  var_name=" %scan(&piece_vars,&i) ";
+  call symput('thevar', var_name); 
+run;
+
+data _tmp;
+	set &indata;
+	where &indata_subset and &thevar>0;
+	keep &dep_var &thevar;
+run;
+
+ods listing close;
+ods output pearsoncorr=piece_pearson;
+proc corr data= _tmp;
+  var &thevar;
+  with &dep_var;
+  weight &wgt;
+run;
+ods listing;
+ods output close;
+
+proc transpose data=piece_pearson (drop=Variable) out=piece_pearson name=Variable prefix=corr_pearson;
+run;
+
+proc append base=jx02_pearson_base data=piece_pearson force;
+run;
+
+%end; 
+
+data jx02_pearson_base;
+	set jx02_pearson_base;
+	if _N_ <=2 * &obs_cnt.;
+run;
+
+data tmp1 tmp2;
+	set jx02_pearson_base;
+	if _N_ > &obs_cnt. then output tmp2;
+	else output tmp1;
+run;
+
+data tmp1;
+	set tmp1(rename=(corr_pearson1=corr_pearson));
+	abs_corr_pearson=abs(corr_pearson);
+  if abs_corr_pearson<0 then abs_corr_pearson=0;
+run;
+
+data &outdata;
+	merge tmp1 tmp2(rename=(Variable=Variable_p corr_pearson1=p_pearson));
+	drop Variable_p;
+	if p_pearson=. then delete;
+run;
+
+options mergenoby=error;
+
+%mend Pearson_Corr_Check;
+
+**********######################################################################*************;
+**********##########    05. Correlation Check & Variable Elimination  ##########*************;
+**********##########             Jipeng Xiong, 02-28-2013             ##########*************;
+**********######################################################################*************;
+************************************Example1*************************************************;
+****  %Dep_Corr_Exclusion                                                                ****;
+****      (indata = jx01_indep_dep_orig_corr, (input correlation dataset)                ****;
+****       sig_level = 0.01,                  (specify significance level)               ****;
+****       must_keep_list =IDN_CUOEMAGE,      (leave blank if no must have variable)     ****;
+****       out_final_dep_corr=jx02_indep_dep_final_corr);                                ****;
+*********************************************************************************************;
+************************************Example2*************************************************;
+****  %Indep_Corr_Exclusion                                                              ****;
+****      (indata=tgt.&master_raw_insample, (input master dataset)                       ****;
+****       var_list=&indep_corr_list,       (input variable list ordered by correlation) ****;
+****       corr_thrd=0.8,                   (specify correlation threshold)              ****;
+****       must_keep_list=IDN_CUOEMAGE,     (leave blank if no must have variable)       ****;
+****       out_orig_indep_corr= jx03_indep_indep_orig_corr,                              ****;
+****       out_final_var_list = jx04_indep_indep_final_corr);                            ****;
+*********************************************************************************************;
+**********######################################################################*************;
+
+%Macro Dep_Corr_Exclusion (indata=, sig_level=, must_keep_list=, out_final_dep_corr=);
+
+data jx01_dep_corr_excluding;
+	set &indata;
+	if min(p_spearman, p_pearson)>&sig_level then delete_ind=1;else delete_ind=0;
+run;
+
+*** get must have variables in indep-dep variable elimination process ***;
+%let cnt = 1; 
+%DO %WHILE(%SCAN(&must_keep_list,&cnt) ne); 
+    %let cnt = %eval(&cnt + 1);
+%END;
+%let nvars = %eval(&cnt - 1);
+
+*** add must keep variables in variable list ***;
+%DO i = 1 %TO &nvars;
+  data _NULL_;
+  	length var_name $33.;            
+    var_name=" %scan(&must_keep_list,&i) ";
+    call symput('excepted_var_name', var_name); 
+  run;
+
+  data jx01_dep_corr_excluding;
+  		set jx01_dep_corr_excluding;
+  		var_trim = "&excepted_var_name";
+  		var_trim = LEFT(TRIM(var_trim));
+  		if variable = var_trim then delete_ind=0;
+  		drop var_trim;
+  run;
+%END;
+
+data jx01_dep_corr_excluding;set jx01_dep_corr_excluding; if delete_ind=0;run;
+
+proc sort data=jx01_dep_corr_excluding(drop=delete_ind) 
+	        out=&out_final_dep_corr; by descending abs_corr_spearman;
+	   run;
+
+%MEND Dep_Corr_Exclusion;
+
+*** get indep-indep variable pearson correlation ***;
+
+%Macro Indep_Corr_Exclusion (indata=, var_list=, corr_thrd=, must_keep_list=,wgt= ,
+	                           correlation_type =,out_orig_indep_corr=, out_final_var_list= );
+
+ods listing close;
+ods output &correlation_type=jx01_corr_output;
+
+%if %eval("&correlation_type." = "PearsonCorr") %then %do;
+ proc corr data= &indata;
+  var &var_list;
+  with &var_list; 
+  %if %eval("&wgt." ne "") %then %do;
+  weight &wgt.;
+  %end;
+run; 
+%end;
+
+%if %eval("&correlation_type." = "SpearmanCorr") %then %do;
+ proc corr data= &indata spearman;
+  var &var_list;
+  with &var_list; 
+run; 
+%end;
+
+ods listing;
+ods output close;
+quit;run;
+
+*** remove p-value and number variables ***;	
+proc contents data=jx01_corr_output out=jx02_var_name_list;run; 
+proc sort data = jx02_var_name_list; by NAME;run;
+proc sort data = jx01_corr_output out=jx03_corr_i;by variable;run;			
+data jx04_indep_corr_orig; set jx01_corr_output;run;
+
+data jx05_remove_var_list;
+	merge jx02_var_name_list (in=a keep=NAME rename=(NAME=variable))
+	      jx03_corr_i (in=b keep=variable)
+	      ;
+	by variable;
+	if not (b);
+	if variable ^= 'Variable'; 
+run;
+
+data jx05_remove_var_list;
+	set jx05_remove_var_list nobs=numobs;
+	call symput('numobs', numobs);
+	drop numobs;
+run;
+	
+%DO k = 1 %TO &numobs;
+
+  data var_&k;
+	  set jx05_remove_var_list;
+		if _N_ = &k  then call symput('var_name', variable);
+	run;
+		
+  data jx04_indep_corr_orig;
+  	set jx04_indep_corr_orig;
+  	drop &var_name;
+  run;
+%END;
+
+data &out_orig_indep_corr;
+	set jx04_indep_corr_orig;
+run;
+
+data jx06_keep_indep_corr;
+	set jx04_indep_corr_orig nobs=numobs2;
+	call symput('numobs2', numobs2);
+	drop numobs2;
+run;
+
+%DO X = 1 %TO &numobs2;
+
+  data _NULL_;
+	  set jx04_indep_corr_orig;
+		if _N_ = &X  then call symput('var_name', variable);
+	run;
+		
+  data jx06_keep_indep_corr;
+  	set jx06_keep_indep_corr;
+  	if abs(&var_name) > &corr_thrd and _N_>&X then _delt_&X =1;else _delt_&X = 0;
+  run;
+%END;
+
+data jx07_must_have_indep_corr;
+	set jx06_keep_indep_corr;
+	delete_ind = max(of _delt_:);
+	drop _delt_:;
+run;	
+
+*** get must have variables in indep-dep variable elimination process ***;
+%let cnt = 1; 
+%DO %WHILE(%SCAN(&must_keep_list,&cnt) ne); 
+    %let cnt = %eval(&cnt + 1);
+%END;
+%let nvars = %eval(&cnt - 1);
+
+*** add must keep variables in variable list ***;
+%DO i = 1 %TO &nvars;
+  data _NULL_;
+  	length var_name $33.;            
+    var_name=" %scan(&must_keep_list,&i) ";
+    call symput('excepted_var_name', var_name); 
+  run;
+
+  data jx07_must_have_indep_corr;
+  		set jx07_must_have_indep_corr;
+  		var_trim = "&excepted_var_name";
+  		var_trim = LEFT(TRIM(var_trim));
+  		if variable = var_trim then delete_ind=0;
+  		drop var_trim;
+  run;
+%END;
+
+data &out_final_var_list; 
+	set jx07_must_have_indep_corr;
+	if delete_ind=1 then delete;
+	drop delete_ind;
+run;
+
+%Mend Indep_Corr_Exclusion;
+
+
+**********######################################################################*************;
+**********##########              06. Stepwise Selection              ##########*************;
+**********########## Modified from Xiaochun Cui's Code, Jipeng Xiong  ##########*************;
+**********######################################################################*************;
+*****7/23/2013, Dengdu Jiang modified to:*;
+*****1. Set max round *;
+*****7/30/2013, Jipeng Xiong Modified ***;
+*****   exclude variable from top to bottom                                        ***;
+*****   remove the new variable if previous "A" variable sign changed in one round ***;
+
+**************************************************************************************;
+****************** logistic stepwise macro for binary variable ***********************;
+**************************************************************************************;
+
+%macro Logistic_Stepwise_B (indata=, spearman_corr=,siglvl=,maxstep=,weight=, max_rd =, drop_list=  );
+
+data m01_sig_corr_var;
+	set &spearman_corr;
+	keep Variable;
+run;
+
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1;
+%DO %WHILE (&iStop=0 and &Numb_Obs^=0 and &rd < &max_rd);
+
+%let rd=%eval(&rd+1);
+
+ods output 
+	ParameterEstimates   = m05_stepw_SelParmEst
+	RSquare              = m05_stepw_RSquare
+	ModelBuildingSummary = m05_stepw_SelectionSummary
+;
+proc logistic data= &indata descending namelen=100 ;
+  title " Logistic Model Fitting ";
+  model &dep = &fit_reg_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit rsq ctable details;     
+  weight &weight;
+run;
+
+ods output close;
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+
+** Print to check **;
+proc print data=m05_stepw_SelParmEst;
+run;
+
+proc print data=m05_stepw_RSquare;
+run;
+
+proc print data=m05_stepw_SelectionSummary;
+run;
+
+%let maxstepplus1 = %eval(&maxstep + 1);
+%IF &maxstep>=10 %THEN %let maxstep_char = &maxstep;
+%IF &maxstep<10  %THEN %let maxstep_char = 0&maxstep;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S&maxstep_char; 
+	array a_est (*) S00 - S&maxstep_char;
+	
+	if first.numberin then do;
+		do i=1 to &maxstepplus1; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S&maxstep_char;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_RSquare(in=b keep=Step nValue2);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+proc sort data=&spearman_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_spearman>0               then correlation_sign='+';
+	else if corr_spearman ne . and corr_spearman<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename corr_spearman = correlation  nValue2=Max_Rescaled_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S&maxstep_char;
+	Partial_R_Sq=Max_Rescaled_R_Sq-_prevrsq;
+	_prevrsq=max(0,Max_Rescaled_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/S11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Max_Rescaled_R_Sq Partial_R_Sq correlation correlation_sign sign_agree S00 - S&maxstep_char;
+run;
+ods csv close;
+
+***** End of Triangle  *****;
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	by step;	
+	step = _N_;
+	retain to_stop 1;
+	retain already_remove 0;
+	retain remove_position 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	to_remove=0;
+	if (sign_agree = 'A' and already_remove=0) then do;
+		do yy=step to %eval(&Numb_Obs-1);
+			if (missing(a_est(yy))=0) and ((a_est(yy)>0 and correlation_sign='-') or (a_est(yy)<0 and correlation_sign='+')) 
+			then do;
+				remove_position=yy;
+				to_stop=0;
+				already_remove=1;
+				leave;
+			end;
+		end;
+	end;
+	else if (sign_agree ne 'A' and already_remove=0) then do;
+		remove_position=_N_;
+		to_stop=0;
+		already_remove=1;
+	end;
+	
+	if step=remove_position then to_remove=1;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+	drop yy remove_position;
+run;
+
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+proc sort data = check_stop nodupkey out = check_stop;
+	by step;
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+*** drop list ***;
+data drop_list_max&maxstep._rd&rd.;
+	set check_stop (keep=Variable to_remove where=(to_remove=1));
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/S11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/S11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/S11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+data drop_list_max&maxstep_char._rd0;
+	set _NULL_;
+run;
+
+data &drop_list.;
+	format Variable $32.;
+	set drop_list_max&maxstep_char._rd:;
+run;
+
+%mend Logistic_Stepwise_B;
+
+**************************************************************************************;
+****************** logistic stepwise macro for continuous variable *******************;
+**************************************************************************************;
+*****7/23/2013, Dengdu Jiang modified to:*;
+*****1. Set max round *;
+*****7/30/2013, Jipeng Xiong Modified ***;
+*****   exclude variable from top to bottom                                        ***;
+*****   remove the new variable if previous "A" variable sign changed in one round ***;
+***** 20141105, Yongkang Wu modified ***;
+*****   fixed the trianlge variable length to avoid truncation ***;
+
+%macro Logistic_Stepwise_C1 (indata=, spearman_corr=,siglvl=,maxstep=, div=, weight=);
+
+data m01_sig_corr_var;
+	set &spearman_corr;
+	keep Variable;
+run;
+
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1);
+
+%let rd=%eval(&rd+1);
+
+ods output 
+	ParameterEstimates   = m05_stepw_SelParmEst
+	RSquare              = m05_stepw_RSquare
+	ModelBuildingSummary = m05_stepw_SelectionSummary
+;
+proc logistic data= &indata descending namelen=100 ;
+  title " Logistic Model Fitting ";
+  model &dep/&div = &fit_reg_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit rsq ctable details;     
+  weight &weight/norm;
+run;
+
+ods output close;
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+
+** Print to check **;
+proc print data=m05_stepw_SelParmEst;
+run;
+
+proc print data=m05_stepw_RSquare;
+run;
+
+proc print data=m05_stepw_SelectionSummary;
+run;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S60;
+	array a_est (*) S00 - S60;
+	
+	if first.numberin then do;
+		do i=1 to 61; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S60;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_RSquare(in=b keep=Step nValue2);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+proc sort data=&spearman_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data round1_triangle2;
+  length Variable $32.;
+  set round1_triangle2;
+run;
+
+data tmp_corr_all;
+  length Variable $32.;
+  set tmp_corr_all;
+run;
+
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_spearman>0               then correlation_sign='+';
+	else if corr_spearman ne . and corr_spearman<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename corr_spearman = correlation  nValue2=Max_Rescaled_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S60;
+	Partial_R_Sq=Max_Rescaled_R_Sq-_prevrsq;
+	_prevrsq=max(0,Max_Rescaled_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/S11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Max_Rescaled_R_Sq Partial_R_Sq correlation correlation_sign sign_agree S00 - S60;
+run;
+ods csv close;
+
+***** End of Triangle  *****;
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	retain to_stop 1;
+	retain already_remove 0;
+	to_remove=0;
+	if sign_agree ne 'A' then do;
+		to_stop=0;
+		if already_remove=0 then do;
+			to_remove=1;
+			already_remove=1;
+		end;
+	end;
+	if end_ind=1 and to_stop=1 then do;
+		call symput('iStop',1);
+	end;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/S11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/S11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 or &Numb_Obs.=1  %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/S11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+%mend Logistic_Stepwise_C1;
+
+%macro Logistic_Stepwise_C1_Pearson (indata=, pearson_corr=,siglvl=,maxstep=, div=, weight=);
+
+data m01_sig_corr_var;
+	set &pearson_corr;
+	keep Variable;
+run;
+
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1);
+
+%let rd=%eval(&rd+1);
+
+ods output 
+	ParameterEstimates   = m05_stepw_SelParmEst
+	RSquare              = m05_stepw_RSquare
+	ModelBuildingSummary = m05_stepw_SelectionSummary
+;
+proc logistic data= &indata descending namelen=100 ;
+  title " Logistic Model Fitting ";
+  model &dep/&div = &fit_reg_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit rsq ctable details;     
+  weight &weight/norm;
+run;
+
+ods output close;
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+
+** Print to check **;
+proc print data=m05_stepw_SelParmEst;
+run;
+
+proc print data=m05_stepw_RSquare;
+run;
+
+proc print data=m05_stepw_SelectionSummary;
+run;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S60;
+	array a_est (*) S00 - S60;
+	
+	if first.numberin then do;
+		do i=1 to 61; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S60;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_RSquare(in=b keep=Step nValue2);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+proc sort data=&pearson_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data round1_triangle2;
+  length Variable $32.;
+  set round1_triangle2;
+run;
+
+data tmp_corr_all;
+  length Variable $32.;
+  set tmp_corr_all;
+run;
+
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_pearson>0               then correlation_sign='+';
+	else if corr_pearson ne . and corr_pearson<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename corr_pearson = correlation  nValue2=Max_Rescaled_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S60;
+	Partial_R_Sq=Max_Rescaled_R_Sq-_prevrsq;
+	_prevrsq=max(0,Max_Rescaled_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/S11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Max_Rescaled_R_Sq Partial_R_Sq correlation correlation_sign sign_agree S00 - S60;
+run;
+ods csv close;
+
+***** End of Triangle  *****;
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	retain to_stop 1;
+	retain already_remove 0;
+	to_remove=0;
+	if sign_agree ne 'A' then do;
+		to_stop=0;
+		if already_remove=0 then do;
+			to_remove=1;
+			already_remove=1;
+		end;
+	end;
+	if end_ind=1 and to_stop=1 then do;
+		call symput('iStop',1);
+	end;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/S11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/S11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 or &Numb_Obs.=1  %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/S11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+%mend Logistic_Stepwise_C1_pearson;
+
+%macro Logistic_Stepwise_C2 (indata=, spearman_corr=,siglvl=,maxstep=,div=, weight=, max_rd =, drop_list= );
+
+data m01_sig_corr_var;
+	set &spearman_corr;
+	keep Variable;
+run;
+
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1 and &rd < &max_rd);
+
+%let rd=%eval(&rd+1);
+
+ods output 
+	ParameterEstimates   = m05_stepw_SelParmEst
+	RSquare              = m05_stepw_RSquare
+	ModelBuildingSummary = m05_stepw_SelectionSummary
+;
+proc logistic data= &indata descending namelen=100 ;
+  title " Logistic Model Fitting ";
+  model &dep/&div = &fit_reg_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit rsq ctable details;     
+  weight &weight/norm;
+run;
+
+ods output close;
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+
+** Print to check **;
+proc print data=m05_stepw_SelParmEst;
+run;
+
+proc print data=m05_stepw_RSquare;
+run;
+
+proc print data=m05_stepw_SelectionSummary;
+run;
+
+%let maxstepplus1 = %eval(&maxstep + 1);
+%IF &maxstep>=100 %THEN %let maxstep_char = &maxstep;
+%ELSE %IF &maxstep>=10 %THEN %let maxstep_char = 0&maxstep;
+%ELSE %IF &maxstep<10  %THEN %let maxstep_char = 00&maxstep;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S000 - S&maxstep_char;
+	array a_est (*) S000 - S&maxstep_char;
+	
+	if first.numberin then do;
+		do i=1 to &maxstepplus1; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S000 - S&maxstep_char;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_RSquare(in=b keep=Step nValue2);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+proc sort data=&spearman_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data round1_triangle2;
+  length Variable $32.;
+  set round1_triangle2;
+run;
+
+data tmp_corr_all;
+  length Variable $32.;
+  set tmp_corr_all;
+run;
+
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_spearman>0               then correlation_sign='+';
+	else if corr_spearman ne . and corr_spearman<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename corr_spearman = correlation  nValue2=Max_Rescaled_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S001 - S&maxstep_char;
+	Partial_R_Sq=Max_Rescaled_R_Sq-_prevrsq;
+	_prevrsq=max(0,Max_Rescaled_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/S11_Triangle_MaxStep&maxstep._rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Max_Rescaled_R_Sq Partial_R_Sq correlation correlation_sign sign_agree S000 - S&maxstep_char;
+run;
+ods csv close;
+
+***** End of Triangle  *****;
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	by step;	
+	step = _N_;
+	retain to_stop 1;
+	retain already_remove 0;
+	retain remove_position 0;
+	array a_est (*) S001 - S&maxstep_char.;
+	to_remove=0;
+	if (sign_agree = 'A' and already_remove=0) then do;
+		do yy=step to %eval(&Numb_Obs-1);
+			if (missing(a_est(yy))=0) and ((a_est(yy)>0 and correlation_sign='-') or (a_est(yy)<0 and correlation_sign='+')) 
+			then do;
+				remove_position=yy;
+				to_stop=0;
+				already_remove=1;
+				leave;
+			end;
+		end;
+	end;
+	else if (sign_agree ne 'A' and already_remove=0) then do;
+		remove_position=_N_;
+		to_stop=0;
+		already_remove=1;
+	end;
+	
+	if step=remove_position then to_remove=1;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+	drop yy remove_position;
+run;
+
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+proc sort data = check_stop nodupkey out = check_stop;
+	by step;
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+*** drop list ***;
+data drop_list_max&maxstep_char._rd&rd.;
+	set check_stop (keep=Variable to_remove where=(to_remove=1));
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/S11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/S11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 or &Numb_Obs.=1  %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/S11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+data drop_list_max&maxstep_char._rd0;
+	set _NULL_;
+run;
+
+data &drop_list.;
+	format Variable $32.;
+	set drop_list_max&maxstep_char._rd:;
+run;
+
+%mend Logistic_Stepwise_C2;
+
+**************************************************************************************;
+****************** stepwise macro for Regression model            *********************;
+**************************************************************************************;
+*****7/23/2013, Dengdu Jiang modified to:*;
+*****1. Set max round *;
+*****7/30/2013, Jipeng Xiong Modified ***;
+*****   exclude variable from top to bottom                                        ***;
+*****   remove the new variable if previous "A" variable sign changed in one round ***;
+
+%macro Reg_Stepwise (indata=,spearman_corr=, siglvl=, wgt=, maxstep=, max_rd =, drop_list=  );
+
+data m01_sig_corr_var;
+	set &spearman_corr;
+	keep Variable;
+run;
+	
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1 and &rd < &max_rd);
+
+%let rd=%eval(&rd+1);
+ods output 
+	SelParmEst       = m05_stepw_SelParmEst
+	SelectionSummary = m05_stepw_SelectionSummary
+;
+
+proc reg data= &indata;
+  title "Stepwise Linear Model Fitting - Round &rd";
+  model &dep = &fit_reg_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit details;
+  weight &wgt;
+run;
+
+ods output close;
+
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+%let maxstepplus1 = %eval(&maxstep + 1);
+%IF &maxstep>=10 %THEN %let maxstep_char = &maxstep;
+%IF &maxstep<10  %THEN %let maxstep_char = 0&maxstep;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S&maxstep_char;
+	array a_est (*) S00 - S&maxstep_char;
+	
+	if first.numberin then do;
+		do i=1 to &maxstepplus1; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S&maxstep_char;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_SelectionSummary(in=b keep=Step ModelRsquare);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+proc sort data=&spearman_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data round1_triangle2;
+  length Variable $32.;
+  set round1_triangle2;
+run;
+
+data tmp_corr_all;
+  length Variable $32.;
+  set tmp_corr_all;
+run;
+
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_spearman>0               then correlation_sign='+';
+	else if corr_spearman ne . and corr_spearman<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename ModelRsquare=Model_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S&maxstep_char;
+	Partial_R_Sq=Model_R_Sq-_prevrsq;
+	_prevrsq=max(0,Model_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/S11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Model_R_Sq Partial_R_Sq corr_spearman corr_sign sign_agree S00 - S&maxstep_char;
+run;
+ods csv close;
+
+
+***** End of Triangle  *****;
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	by step;	
+	step = _N_;
+	retain to_stop 1;
+	retain already_remove 0;
+	retain remove_position 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	to_remove=0;
+	if (sign_agree = 'A' and already_remove=0) then do;
+		do yy=step to %eval(&Numb_Obs-1);
+			if (missing(a_est(yy))=0) and ((a_est(yy)>0 and correlation_sign='-') or (a_est(yy)<0 and correlation_sign='+')) 
+			then do;
+				remove_position=yy;
+				to_stop=0;
+				already_remove=1;
+				leave;
+			end;
+		end;
+	end;
+	else if (sign_agree ne 'A' and already_remove=0) then do;
+		remove_position=_N_;
+		to_stop=0;
+		already_remove=1;
+	end;
+	
+	if step=remove_position then to_remove=1;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+	drop yy remove_position;
+run;
+
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+proc sort data = check_stop nodupkey out = check_stop;
+	by step;
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+*** drop list ***;
+data drop_list_max&maxstep._rd&rd.;
+	set check_stop (keep=Variable to_remove where=(to_remove=1));
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/S11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/S11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 or &Numb_Obs.=1  %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/S11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+data drop_list_max&maxstep_char._rd0;
+	set _NULL_;
+run;
+
+data &drop_list.;
+	format Variable $32.;
+	set drop_list_max&maxstep_char._rd:;
+run;
+
+%mend Reg_Stepwise;
+
+**************************************************************;
+*****  Interaction Term Regression Stepwise        ***********;
+**************************************************************;
+*****7/23/2013, Dengdu Jiang modified to:*;
+*****1. Set max round *;
+*****7/30/2013, Jipeng Xiong Modified ***;
+*****   exclude variable from top to bottom                                        ***;
+*****   remove the new variable if previous "A" variable sign changed in one round ***;
+
+%macro IT_Reg_Stepwise (indata=,spearman_corr=, siglvl=, wgt=, maxstep=, max_rd =, drop_list=  );
+
+data m01_sig_corr_var;
+	set &spearman_corr;
+	keep Variable;
+run;
+	
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1 and &rd < &max_rd);
+
+%let rd=%eval(&rd+1);
+
+ods output 
+	SelParmEst       = m05_stepw_SelParmEst
+	SelectionSummary = m05_stepw_SelectionSummary
+;
+
+proc reg data= &indata;
+  title "Stepwise Linear Model Fitting - Round &rd";
+  model &dep_trans = &fit_reg_list_it
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit details;
+  weight &wgt;
+run;
+
+ods output close;
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+%let maxstepplus1 = %eval(&maxstep + 1);
+%IF &maxstep>=10 %THEN %let maxstep_char = &maxstep;
+%IF &maxstep<10  %THEN %let maxstep_char = 0&maxstep;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S&maxstep_char;
+	array a_est (*) S00 - S&maxstep_char;
+	
+	if first.numberin then do;
+		do i=1 to &maxstepplus1; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S&maxstep_char.;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_SelectionSummary(in=b keep=Step ModelRsquare);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+
+****Need to change the correlation dataset here ****;
+proc sort data=&spearman_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_spearman>0               then correlation_sign='+';
+	else if corr_spearman ne . and corr_spearman<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename ModelRsquare=Model_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	Partial_R_Sq=Model_R_Sq-_prevrsq;
+	_prevrsq=max(0,Model_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/IT11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Model_R_Sq Partial_R_Sq corr_spearman corr_sign sign_agree S00 - S&maxstep_char.;
+run;
+ods csv close;
+
+***** End of Triangle  *****;
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	by step;	
+	step = _N_;
+	retain to_stop 1;
+	retain already_remove 0;
+	retain remove_position 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	to_remove=0;
+	if (sign_agree = 'A' and already_remove=0) then do;
+		do yy=step to %eval(&Numb_Obs-1);
+			if (missing(a_est(yy))=0) and ((a_est(yy)>0 and correlation_sign='-') or (a_est(yy)<0 and correlation_sign='+')) 
+			then do;
+				remove_position=yy;
+				to_stop=0;
+				already_remove=1;
+				leave;
+			end;
+		end;
+	end;
+	else if (sign_agree ne 'A' and already_remove=0) then do;
+		remove_position=_N_;
+		to_stop=0;
+		already_remove=1;
+	end;
+	
+	if step=remove_position then to_remove=1;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+	drop yy remove_position;
+run;
+
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+proc sort data = check_stop nodupkey out = check_stop;
+	by step;
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+*** drop list ***;
+data drop_list_max&maxstep._rd&rd.;
+	set check_stop (keep=Variable to_remove where=(to_remove=1));
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/IT11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list_it =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/IT11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/IT11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/IT11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list_it=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/IT11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+data drop_list_max&maxstep_char._rd0;
+	set _NULL_;
+run;
+
+data &drop_list.;
+	format Variable $32.;
+	set drop_list_max&maxstep_char._rd:;
+run;
+
+%mend IT_Reg_Stepwise;
+
+**************************************************************;
+*****  Regression Stepwise with Pearson Correlation***********;
+**************************************************************;
+*****1/23/2014, Jingnan Xiao created 												 *;
+
+%macro Reg_Stepwise_Pearson (indata=,pearson_corr=, siglvl=, wgt=, maxstep=, max_rd =, drop_list=  );
+
+data m01_sig_corr_var;
+	set &pearson_corr;
+	keep Variable;
+run;
+	
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1 and &rd < &max_rd);
+
+%let rd=%eval(&rd+1);
+ods output 
+	SelParmEst       = m05_stepw_SelParmEst
+	SelectionSummary = m05_stepw_SelectionSummary
+;
+
+proc reg data= &indata;
+  title "Stepwise Linear Model Fitting - Round &rd";
+  model &dep = &fit_reg_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit details;
+  weight &wgt;
+run;
+
+ods output close;
+
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='Intercept' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+%let maxstepplus1 = %eval(&maxstep + 1);
+%IF &maxstep>=10 %THEN %let maxstep_char = &maxstep;
+%IF &maxstep<10  %THEN %let maxstep_char = 0&maxstep;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S&maxstep_char;
+	array a_est (*) S00 - S&maxstep_char;
+	
+	if first.numberin then do;
+		do i=1 to &maxstepplus1; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S&maxstep_char.;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_SelectionSummary(in=b keep=Step ModelRsquare);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+proc sort data=&pearson_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data round1_triangle2;
+  length Variable $32.;
+  set round1_triangle2;
+run;
+
+data tmp_corr_all;
+  length Variable $32.;
+  set tmp_corr_all;
+run;
+
+
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_pearson>0               then correlation_sign='+';
+	else if corr_pearson ne . and corr_pearson<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename ModelRsquare=Model_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	Partial_R_Sq=Model_R_Sq-_prevrsq;
+	_prevrsq=max(0,Model_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/S11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Model_R_Sq Partial_R_Sq corr_pearson corr_sign sign_agree S00 - S&maxstep_char.;
+run;
+ods csv close;
+
+
+***** End of Triangle  *****;
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'Intercept')) end=end_ind;
+	by step;	
+	step = _N_;
+	retain to_stop 1;
+	retain already_remove 0;
+	retain remove_position 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	to_remove=0;
+	if (sign_agree = 'A' and already_remove=0) then do;
+		do yy=step to %eval(&Numb_Obs-1);
+			if (missing(a_est(yy))=0) and ((a_est(yy)>0 and correlation_sign='-') or (a_est(yy)<0 and correlation_sign='+')) 
+			then do;
+				remove_position=yy;
+				to_stop=0;
+				already_remove=1;
+				leave;
+			end;
+		end;
+	end;
+	else if (sign_agree ne 'A' and already_remove=0) then do;
+		remove_position=_N_;
+		to_stop=0;
+		already_remove=1;
+	end;
+	
+	if step=remove_position then to_remove=1;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+	drop yy remove_position;
+run;
+
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+proc sort data = check_stop nodupkey out = check_stop;
+	by step;
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+*** drop list ***;
+data drop_list_max&maxstep._rd&rd.;
+	set check_stop (keep=Variable to_remove where=(to_remove=1));
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir/S11_var_list_stepwise.txt";
+	if _N_=1 then put '%let fit_reg_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir/S11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 or &Numb_Obs.=1  %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir/S11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir/S11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+data drop_list_max&maxstep_char._rd0;
+	set _NULL_;
+run;
+
+data &drop_list.;
+	format Variable $32.;
+	set drop_list_max&maxstep_char._rd:;
+run;
+
+%mend Reg_Stepwise_Pearson;
+
+**************************************************************;
+*****  Combined Regression Stepwise               ************;
+**************************************************************;
+*****7/23/2013, Dengdu Jiang modified to:*;
+*****1. Set max round *;
+*****7/30/2013, Jipeng Xiong Modified ***;
+*****   exclude variable from top to bottom                                        ***;
+*****   remove the new variable if previous "A" variable sign changed in one round ***;
+
+%macro Comb_Reg_Stepwise (indata=,spearman_corr=, siglvl=, wgt=, maxstep=, max_rd =, drop_list=  );
+	
+data m01_sig_corr_var;
+	set &spearman_corr;
+	keep Variable;
+run;
+	
+%let rd=0;
+%let iStop=0;
+%let Numb_Obs = 1.1;
+%DO %WHILE (&iStop=0 and &Numb_Obs.>1 and &rd < &max_rd);
+
+%let rd=%eval(&rd+1);
+
+ods output 
+	SelParmEst       = m05_stepw_SelParmEst
+	SelectionSummary = m05_stepw_SelectionSummary
+;
+
+proc reg data= &indata;
+  title "Stepwise Linear Model Fitting - Round &rd";
+  model &dep = &combine_list
+        /  selection = stepwise sls = &siglvl sle = &siglvl maxstep=&maxstep lackfit details;
+  weight &wgt;      
+run;
+
+ods output close;
+
+data m05_stepw_SelParmEst;
+	format variable $32.;
+	set m05_stepw_SelParmEst;
+	variable = upcase(variable);
+run;
+
+** check estimate change over steps **;
+proc summary data=m05_stepw_SelParmEst nway missing;
+	class variable;
+	output out=numberin  min(step)=numberin;
+run;
+
+proc sort data=m05_stepw_SelParmEst out=tmp_r1_parest; 
+	by variable; 
+run;
+
+data m05_stepw_SelParmEst;
+	merge
+	  tmp_r1_parest (in=a)
+	  numberin (in=b drop=_FREQ_ _TYPE_)
+	;
+	by variable;
+	if variable='INTERCEPT' then numberin=0;
+run;
+
+proc sort data=m05_stepw_SelParmEst; 
+	by numberin step; 
+run;
+
+%let maxstepplus1 = %eval(&maxstep + 1);
+%IF &maxstep>=10 %THEN %let maxstep_char = &maxstep;
+%IF &maxstep<10  %THEN %let maxstep_char = 0&maxstep;
+
+************ Build the triangle     ***********;
+data round1_triangle;
+	set m05_stepw_SelParmEst;
+	by numberin;
+	retain S00 - S&maxstep_char;
+	array a_est (*) S00 - S&maxstep_char;
+	
+	if first.numberin then do;
+		do i=1 to &maxstepplus1; a_est(i) = . ;end;
+	end;
+	
+	a_est(step+1)=Estimate;
+	
+	if last.numberin then do;
+		keep Variable numberin
+		     S00 - S&maxstep_char.;
+		output;
+	end;
+run;
+
+** correlation **;
+data round1_triangle2;
+	merge round1_triangle(in=a rename=(numberin=step)) m05_stepw_SelectionSummary(in=b keep=Step ModelRsquare);
+	by step; if a;
+run;
+proc sort data=round1_triangle2; by Variable; run;
+
+****Need to change the correlation dataset here ****;
+proc sort data=&spearman_corr out=tmp_corr_all; by Variable; run;
+
+** Final Triagle **;
+data m05_round1_triangle;
+	merge round1_triangle2(in=a ) tmp_corr_all (in=b);
+	by Variable; if a;
+	if      corr_spearman>0               then correlation_sign='+';
+	else if corr_spearman ne . and corr_spearman<0 then correlation_sign='-';
+	label Variable = "Variable";
+	rename ModelRsquare=Model_R_Sq;
+run;
+
+proc sort data=m05_round1_triangle;by step;run;
+	
+data m05_round1_triangle;
+	set m05_round1_triangle;
+	retain _prevrsq 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	Partial_R_Sq=Model_R_Sq-_prevrsq;
+	_prevrsq=max(0,Model_R_Sq);
+	if step>0 and a_est(step)>0 and correlation_sign='+' then sign_agree='A';
+	if step>0 and a_est(step)<0 and correlation_sign='-' then sign_agree='A';
+run;
+
+proc sql noprint;
+ select count(*) into : Numb_Obs from m05_round1_triangle;
+quit;
+
+ods csv file="&tgt_dir/Comb11_Triangle_rd&rd..csv";
+proc report data=m05_round1_triangle;
+	column Variable step Model_R_Sq Partial_R_Sq corr_spearman corr_sign sign_agree S00 - S&maxstep_char.;
+run;
+ods csv close;
+
+***** End of Triangle  *****;
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+*** check if all signs agree    *****;
+data check_stop;
+	set m05_round1_triangle (where=(Variable ne 'INTERCEPT')) end=end_ind;
+	by step;	
+	step = _N_;
+	retain to_stop 1;
+	retain already_remove 0;
+	retain remove_position 0;
+	array a_est (*) S01 - S&maxstep_char.;
+	to_remove=0;
+	if (sign_agree = 'A' and already_remove=0) then do;
+		do yy=step to %eval(&Numb_Obs-1);
+			if (missing(a_est(yy))=0) and ((a_est(yy)>0 and correlation_sign='-') or (a_est(yy)<0 and correlation_sign='+')) 
+			then do;
+				remove_position=yy;
+				to_stop=0;
+				already_remove=1;
+				leave;
+			end;
+		end;
+	end;
+	else if (sign_agree ne 'A' and already_remove=0) then do;
+		remove_position=_N_;
+		to_stop=0;
+		already_remove=1;
+	end;
+	
+	if step=remove_position then to_remove=1;
+
+***if only intercept left then terminate***;
+	if (end_ind=1 and to_stop=1) or &Numb_Obs.=1 then do;
+		call symput('iStop',1);
+	end;
+
+	drop yy remove_position;
+run;
+
+proc sort data = m05_round1_triangle nodupkey out = m05_round1_triangle;
+	by step;
+run;	
+
+proc sort data = check_stop nodupkey out = check_stop;
+	by step;
+run;
+
+%IF &iStop=0 %THEN %DO;
+proc sort data=m01_sig_corr_var out=new_list;
+	by Variable;
+run;
+data m01_sig_corr_var;
+	merge new_list(in=a) check_stop(in=b keep=Variable to_remove where=(to_remove=1));
+	by Variable;
+	if a=1 and b=0;
+	drop to_remove;
+run;
+
+*** drop list ***;
+data drop_list_max&maxstep._rd&rd.;
+	set check_stop (keep=Variable to_remove where=(to_remove=1));
+run;
+
+data _NULL_;
+	set m01_sig_corr_var;
+	file "&tgt_dir./Comb11_var_list_stepwise.txt";
+	if _N_=1 then put '%let combine_list =';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir./Comb11_var_list_stepwise.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir./Comb11_var_list_stepwise.txt";
+
+%END;
+
+%IF &iStop=1 %THEN %DO;
+data _NULL_;
+	set check_stop (where=(to_remove=0));
+	file "&tgt_dir./Comb11_var_list_selected.txt";
+	if _N_=1 then put '%let f_list_comb=';
+	put Variable;
+run;
+
+data _NULL_;
+	file "&tgt_dir./Comb11_var_list_selected.txt" mod;
+	put ';';
+run;
+
+%END;
+%END;
+
+data drop_list_max&maxstep_char._rd0;
+	set _NULL_;
+run;
+
+data &drop_list.;
+	format Variable $32.;
+	set drop_list_max&maxstep_char._rd:;
+run;
+
+%mend Comb_Reg_Stepwise;
+
+**********######################################################################*************;
+**********##########              07. Model Validation                ##########*************;
+**********##########         version: Validation_PD_EAD_LGD5          ##########*************;
+**********######################################################################*************;
+
+**********************************************************************************;
+** Validation_PD_EAD_LGD5.sas                                                   **;
+** Created and compiled by Jonathan Zuo (jonathan.zuo@aexp.com) on 3/2/2012     **;
+** Modified by Tina Huang (ting.huang@aexp.com) on 5/24/2012                    **;
+** Modified by Kevin Wang (wen.wang@aexp.com) on 8/07/2012                      **;
+**                                                                              **;
+** Description                                                                  **;
+**   Performs validation of PD/EAD/LGD models                                   **;
+**   The code contains three validation macros and two supporting macros        **;
+**   The validation macros are used for PD/EAD/LGD models respectively          **;
+**   The supporting macros are quoted by the validation macros                  **;
+**                                                                              **;
+** Input:                                                                       **;
+**   dataset                                                                    **;
+**   subset condition ("where" clause in SAS)                                   **;
+**   dependent variable                                                         **;
+**   prediction                                                                 **;
+**   number of bins: for calculation of Gini and Accuracy                       **;
+**   weight (PD and LGD only)                                                   **;
+**                                                                              **;
+** Output:                                                                      **;
+**   Validation statistics                                                      **;
+**   Pearson correlation                                                        **;
+**   RMSE                                                                       **;
+**   Gini                                                                       **;
+**   Model Efficiency                                                           **;
+**   Accuracy Index                                                             **;
+**   K-S (PD only)                                                              **;
+**   CLAR (LGD only)                                                            **;
+**   Lorenz table                                                               **;
+**   Predicted vs Actual chart                                                  **;
+**                                                                              **;
+**********************************************************************************;
+
+
+**********************************************************************************;
+**********************************************************************************;
+** Validation of EAD                                                        ******;
+**********************************************************************************;
+**********************************************************************************;
+
+** Calculate the following statistics: Pearson Corr, RMSE, Gini, Model Efficiency, Accuracy Index **;
+** Output above statistics in a dataset;
+** Output predicted vs actual chart;
+** Output lorenz table;
+** No weight for EAD;
+
+%macro validation_ead1(indata=,where_clause=,dep=,dep_h=,nbins=,out_dir=,outdata=,outlorenz=,chart_title=);
+
+%if ("&where_clause" eq "") %then %do;
+	%let where_clause = 1=1;
+%end;
+
+
+*****************************************************;
+**** 1. Dep var correlation                   *******;
+*****************************************************;
+ods output PearsonCorr=PearsonCorr;
+proc corr data=&indata (where=(&where_clause));
+	var &dep;	
+	with &dep_h;	
+run;
+ods output close;
+quit;
+
+
+
+*****************************************************;
+**** 2. RMSE                                  *******;
+*****************************************************;
+%calc_ss(indata= &indata (where=(&where_clause)) , dep=&dep, dep_h=&dep_h, wt=1, spl=1);
+
+** output is tmp.sas7bdat **;
+data rmse;
+	set tmp;
+	keep rmse n_obs;
+	call symput("_nobs",n_obs);
+run;
+
+
+
+*****************************************************;
+**** 3. Lorenz curve and p vs a plot          *******;
+*****************************************************;
+
+data bin_data0;
+	set &indata;
+	where &where_clause;
+	rankey = ranuni(2012);
+run;
+proc sort data=bin_data0;
+	by &dep_h descending rankey;
+run;
+data m10_bin_ins;
+	set bin_data0;
+	&dep_h._q = floor( _N_ / ((1+&_nobs)/&nbins) )+1;
+run;
+
+proc summary data=m10_bin_ins nway missing;
+  class  &dep_h._q;
+  var &dep &dep_h;
+  output out=m11_lorenz_ins sum=;
+run;
+
+proc sort data=m11_lorenz_ins ;
+	by descending &dep_h._q;
+run;
+
+
+*******************;
+** actual lorenz **;
+*******************;
+proc sort data=bin_data0;
+	by &dep descending rankey;
+run;
+data tmp_actual;
+	set bin_data0;
+	&dep._q = floor( _N_ / ((1+&_nobs)/&nbins) )+1;
+run;
+
+
+proc summary data=tmp_actual nway missing;
+  class  &dep._q;
+  var &dep; 
+  output out=actual_lorenz_ins sum=;
+run;
+
+
+proc sort data=actual_lorenz_ins ;
+	by descending &dep._q ;
+run;
+
+
+** output **;
+ods listing close;
+ods csv file="&out_dir/&outlorenz..csv";
+proc print data=m11_lorenz_ins;
+proc print data=actual_lorenz_ins;
+run;
+ods csv close;
+quit;run;
+ods listing;
+
+/*
+** PRED vs Actual;
+data pvsa;
+	set m11_lorenz_ins;
+	Avg_Pred=&dep_h/_FREQ_;
+	Avg_Actual=&dep/_FREQ_;
+	nbin=_N_;
+run;
+
+goptions reset=global gunit=pct border cback=white
+colors=(black blue green red)
+ftitle=swissb ftext=swiss htitle=5 htext=4;
+
+axis1 label=none;
+axis2 label=none;
+
+symbol1
+color=blue
+interpol=join
+value=none
+height=3
+width=2;
+
+symbol2
+color=red
+interpol=join
+value=none
+height=3
+cv=red
+width=2;
+
+title1 "&chart_title";
+
+goptions device=png;
+filename dummyods temp;
+ods html file=dummyods  gpath="&out_dir";
+
+proc gplot data=pvsa;
+	plot Avg_Pred*nbin Avg_Actual*nbin / overlay haxis=axis1 vaxis=axis2 name="&outlorenz";
+run;
+
+ods html close;
+
+title;run;
+*/
+** calculate Gini and Model Efficiency **;
+
+** predicted lorenz **;
+proc summary data=m11_lorenz_ins nway missing; output out=lorenz_sum sum(&dep)=dep_sum sum(_FREQ_)=nobs;
+run;
+
+proc sql;
+	create table lorenz_gini as
+	select a.*, b.dep_sum, b.nobs
+	from m11_lorenz_ins a, lorenz_sum b;
+quit;run;
+
+data lorenz_gini;
+	set lorenz_gini;
+	retain cumu_dep prev_cumu_dep_pct 0;
+	cumu_dep=sum(cumu_dep,&dep);
+	cumu_dep_pct=cumu_dep/dep_sum;
+	area=(cumu_dep_pct+prev_cumu_dep_pct)/&nbins/2;
+	prev_cumu_dep_pct=cumu_dep_pct;
+run;
+proc summary data=lorenz_gini nway missing; var area; output out=lorenz_gini_summ sum(area)=;
+run;
+
+
+** actual lorenz **;
+proc summary data=actual_lorenz_ins nway missing; var &dep; output out=lorenz_a_sum sum(&dep)=dep_sum;
+run;
+
+proc sql;
+	create table lorenz_a_gini as
+	select a.*, b.dep_sum
+	from actual_lorenz_ins a, lorenz_a_sum b;
+quit;run;
+
+data lorenz_a_gini;
+	set lorenz_a_gini;
+	retain cumu_dep prev_cumu_dep_pct 0;
+	cumu_dep=sum(cumu_dep,&dep);
+	cumu_dep_pct=cumu_dep/dep_sum;
+	area=(cumu_dep_pct+prev_cumu_dep_pct)/&nbins/2;
+	prev_cumu_dep_pct=cumu_dep_pct;
+run;
+proc summary data=lorenz_a_gini nway missing; var area; output out=lorenz_a_gini_summ sum(area)=area_max;
+run;
+
+
+** calculate Accuracy index **;
+data ai;
+	set lorenz_gini end=end_ind;
+	retain cumu_diff cnt 0;
+	diff=abs(&dep - &dep_h)/_FREQ_;
+	cumu_diff=sum(0,cumu_diff,diff);
+	cnt+1;
+	if end_ind=1 then do;
+		accuracy_index=cumu_diff/cnt/(dep_sum/nobs);
+		output;
+	end;
+run;
+
+*****************************************************;
+**** 5. Default summary                       *******;
+*****************************************************;
+
+options mergenoby=nowarn;
+data tmp_out;
+	merge
+	PearsonCorr (keep=Variable &dep rename=(&dep=correlation))
+	rmse
+	lorenz_gini_summ   (keep=area)
+	lorenz_a_gini_summ (keep=area_max)
+	ai (keep=accuracy_index)
+	;
+	area=(area-0.5)*2;
+	area_max=(area_max-0.5)*2;
+	model_eff=area/area_max;
+	if n_obs <1000 then modified_accuracy_index = accuracy_index * sqrt(n_obs/1000);
+	else modified_accuracy_index = accuracy_index;
+run;
+options mergenoby=error;
+
+proc sql;                                                                 
+  create table &outdata as
+  
+    select
+     Variable
+	  ,n_obs
+	  ,correlation
+	  ,rmse
+	  ,model_eff as modified_gini
+	  ,accuracy_index
+	  ,modified_accuracy_index
+    from tmp_out;
+quit; 
+
+proc print data=&outdata noobs;run;
+
+%mend validation_ead1;
+
+**********************************************************************************;
+**********************************************************************************;
+** Validation of PD                                                         ******;
+**********************************************************************************;
+**********************************************************************************;
+
+** Calculate the following statistics: Pearson Corr, RMSE, Gini, Model Efficiency, Accuracy Index, K-S **;
+** Output above statistics in a dataset;
+** Output predicted vs actual chart;
+** Output lorenz table;
+** PD has weight variable;
+
+%macro validation_pd1(indata=,where_clause=,dep=,dep_h=,wt=,nbins=,out_dir=,outdata=,outlorenz=,chart_title=);
+
+%if ("&where_clause" eq "") %then %do;
+	%let where_clause = 1=1;
+%end;
+
+*****************************************************;
+**** 1. Dep var correlation                   *******;
+*****************************************************;
+ods output PearsonCorr=PearsonCorr;
+proc corr data=&indata (where=(&where_clause));
+	var &dep;	
+	with &dep_h;	
+	weight &wt;
+run;
+ods output close;
+quit;run;
+
+*****************************************************;
+**** 2. RMSE                                  *******;
+*****************************************************;
+%calc_ss(indata= &indata (where=(&where_clause)) , dep=&dep, dep_h=&dep_h, wt=&wt, spl=1);
+
+** output is tmp.sas7bdat **;
+data rmse;
+	set tmp;
+	keep rmse n_obs wt_sum;
+	call symput ("_nobs_w", wt_sum);
+run;
+
+*****************************************************;
+**** 3. Lorenz curve and p vs a plot          *******;
+*****************************************************;
+
+data bin_data0;
+	set &indata;
+	where &where_clause;
+	rankey = ranuni(2012);
+run;
+proc sort data=bin_data0;
+	by &dep_h descending rankey;
+run;
+data m10_bin_ins;
+	set bin_data0;
+	retain sum_w 0;
+	sum_w = sum(sum_w, &wt);
+	
+	&dep_h._q = floor(sum_w/ ((1+&_nobs_w)/&nbins) )+1;
+run;
+
+data m10_bin_ins;
+	set m10_bin_ins;
+	depw=&dep * &wt;
+	dephw=&dep_h * &wt;
+run;
+
+proc summary data=m10_bin_ins nway missing;
+  class  &dep_h._q;
+  var &wt depw dephw;
+  output out=m11_lorenz_ins sum=;
+run;
+
+proc sort data=m11_lorenz_ins ;
+	by descending &dep_h._q;
+run;
+
+*******************;
+** actual lorenz **;
+*******************;
+proc sort data=bin_data0;
+	by &dep descending rankey;
+run;
+data tmp_actual;
+	set bin_data0;
+	retain sum_w 0;
+	sum_w = sum(sum_w, &wt);
+	&dep._q = floor(sum_w/ ((1+&_nobs_w)/&nbins) )+1;
+run;
+
+data tmp_actual;
+	set tmp_actual;
+	depw=&dep * &wt;
+run;
+
+proc summary data=tmp_actual nway missing;
+  class &dep._q;
+  var &wt depw; 
+  output out=actual_lorenz_ins sum=;
+run;
+
+
+proc sort data=actual_lorenz_ins ;
+	by descending &dep._q ;
+run;
+
+
+** output **;
+ods listing close;
+ods csv file="&out_dir/&outlorenz..csv";
+proc print data=m11_lorenz_ins;
+proc print data=actual_lorenz_ins;
+run;
+ods csv close;
+quit;run;
+ods listing;
+
+/*
+** PRED vs Actual;
+data pvsa;
+	set m11_lorenz_ins;
+	Avg_Pred= dephw/&wt;
+	Avg_Actual=depw/&wt;
+	nbin=_N_;
+run;
+
+goptions reset=global gunit=pct border cback=white
+colors=(black blue green red)
+ftitle=swissb ftext=swiss htitle=4 htext=3;
+
+axis1 label=none;
+axis2 label=none;
+
+symbol1
+color=blue
+interpol=join
+value=none
+height=3
+width=2;
+
+symbol2
+color=red
+interpol=join
+value=none
+height=3
+cv=red
+width=2;
+
+title1 "&chart_title";
+
+goptions device=png;
+filename dummyods temp;
+ods html file=dummyods  gpath="&out_dir";
+
+proc gplot data=pvsa;
+	plot Avg_Pred*nbin Avg_Actual*nbin / overlay haxis=axis1 vaxis=axis2 name="&outlorenz";
+run;
+
+ods html close;
+
+title;run;
+*/
+** calculate Gini and Model Efficiency **;
+
+** predicted lorenz **;
+proc summary data=m11_lorenz_ins nway missing; output out=lorenz_sum sum(depw)=dep_sum sum(&wt)=nobs;
+run;
+
+proc sql;
+	create table lorenz_gini as
+	select a.*, b.dep_sum, b.nobs
+	from m11_lorenz_ins a, lorenz_sum b;
+quit;run;
+
+data lorenz_gini;
+	set lorenz_gini;
+	retain cumu_dep prev_cumu_dep_pct 0;
+	cumu_dep=sum(cumu_dep,depw);
+	cumu_dep_pct=cumu_dep/dep_sum;
+	area=(cumu_dep_pct+prev_cumu_dep_pct)/&nbins/2;
+	prev_cumu_dep_pct=cumu_dep_pct;
+run;
+proc summary data=lorenz_gini nway missing; output out=lorenz_gini_summ sum(area)=;
+run;
+
+** calculate k-s **;
+data nonevent;
+	set lorenz_gini;
+	retain cumu_nonevent 0;
+	nonevent=&wt - depw;
+	cumu_nonevent=sum(cumu_nonevent,nonevent);
+	cumu_nonevent_pct=cumu_nonevent/(nobs - dep_sum);
+	k_s=cumu_dep_pct-cumu_nonevent_pct;
+run;
+proc summary data=nonevent nway missing; output out=nonevent_ks max(k_s)=;
+run;
+
+** actual lorenz **;
+proc summary data=actual_lorenz_ins nway missing; output out=lorenz_a_sum sum(depw)=dep_sum;
+run;
+
+proc sql;
+	create table lorenz_a_gini as
+	select a.*, b.dep_sum
+	from actual_lorenz_ins a, lorenz_a_sum b;
+quit;run;
+
+data lorenz_a_gini;
+	set lorenz_a_gini;
+	retain cumu_dep prev_cumu_dep_pct 0;
+	cumu_dep=sum(cumu_dep,depw);
+	cumu_dep_pct=cumu_dep/dep_sum;
+	area=(cumu_dep_pct+prev_cumu_dep_pct)/&nbins/2;
+	prev_cumu_dep_pct=cumu_dep_pct;
+run;
+proc summary data=lorenz_a_gini nway missing; output out=lorenz_a_gini_summ sum(area)=area_max;
+run;
+
+** calculate Accuracy index **;
+data ai;
+	set lorenz_gini end=end_ind;
+	retain cumu_diff cnt 0;
+	diff=abs(depw - dephw)/&wt;
+	cumu_diff=sum(0,cumu_diff,diff);
+	cnt+1;
+	if end_ind=1 then do;
+		accuracy_index=cumu_diff/cnt/(dep_sum/nobs);
+		output;
+	end;
+run;
+
+*****************************************************;
+**** 4. Hosmer–Lemeshow test                  *******;
+*****************************************************;
+data hl_random_sort;
+	set &indata (where=(&where_clause)) end=end_ind;
+	retain cumu_wt 0;
+	cumu_wt = cumu_wt + &wt;
+	random_numb = ranuni(20120924);
+	if end_ind=1 then call symput("cumu_wt",cumu_wt); 
+run;
+
+proc sort data = hl_random_sort (keep=&dep &dep_h random_numb &wt) out=hl_pre; by &dep_h random_numb; run;
+
+data hl_pre ;
+	set hl_pre (drop=random_numb);
+	retain obs_cumu_wt 0;
+	obs_cumu_wt = obs_cumu_wt + &wt;	
+	group_ind=floor(10*obs_cumu_wt/(&cumu_wt+1))+1;
+	&dep._w = &dep * &wt;
+	&dep_h._w = &dep_h * &wt;
+	
+run;
+
+proc summary data= hl_pre nway missing;
+	class group_ind;
+	var &dep._w &dep_h._w &wt;
+	output out=hl_sum sum()=;
+run;  
+
+data hl_sum;
+	set hl_sum end=end_ind;
+	retain HL_chi_sq 0;
+
+  HL_chi_sq = HL_chi_sq + HL_G;
+  if end_ind then do;
+  	keep HL_chi_sq;
+  	output hl_sum;
+  end;
+run;
+
+*****************************************************;
+**** 5. Default summary                       *******;
+*****************************************************;
+data df_temp;
+	set &indata (where=(&where_clause));
+	wgt_dep = &wt * &dep;
+run;
+
+proc summary data=df_temp nway missing;
+	var wgt_dep &dep;
+	output out=df_sum sum()=;
+run;
+
+**************************************;
+options mergenoby=nowarn;
+data tmp_out;
+	merge
+	PearsonCorr (keep=Variable &dep rename=(&dep=correlation))
+	rmse
+	lorenz_gini_summ   (keep=area)
+	lorenz_a_gini_summ (keep=area_max)
+	nonevent_ks (keep=k_s)
+	ai (keep=accuracy_index)
+	df_sum (keep=wgt_dep &dep rename=(&dep=n_df))
+	hl_sum
+	;
+	area=(area-0.5)*2;
+	area_max=(area_max-0.5)*2;
+	model_eff=area/area_max;
+	if n_df<1000 then modified_accuracy_index = accuracy_index * sqrt(n_df/1000);
+	else modified_accuracy_index = accuracy_index;
+run;
+options mergenoby=error;
+
+proc sql;                                                                 
+  create table &outdata as
+  
+    select
+     Variable
+	  ,n_obs
+	  ,wt_sum
+	  ,n_df
+	  ,wgt_dep
+	  ,correlation
+	  ,rmse
+	  ,model_eff as modified_gini
+	  ,accuracy_index
+	  ,modified_accuracy_index
+	  ,k_s
+	  ,HL_chi_sq
+    from tmp_out;
+quit; 
+
+proc print data=&outdata noobs;run;
+
+%mend validation_pd1;
+
+
+**********************************************************************************;
+**********************************************************************************;
+** Validation of LGD                                                        ******;
+**********************************************************************************;
+**********************************************************************************;
+
+** Calculate the following statistics: Pearson Corr, RMSE, Gini, Model Efficiency, Accuracy Index, CLAR **;
+** Output above statistics in a dataset;
+** Output predicted vs actual chart;
+** Output lorenz table;
+** Output CLAR table;
+** LGD uses weight;
+
+***** dep / dep_h - actual / predicted recovery rate                     *****;
+***** dep2 / dep2_h - actual / predicted recovery amount                 *****;
+***** weight - ead amount                                                *****;
+***** lgd / lgd_h - lgd = 1-RR , lgd_h = 1-RR_h                          *****;
+
+%macro validation_lgd1(indata=,where_clause=,dep=,dep_h=,wt=,nbins=,out_dir=,outdata=,outlorenz=,chart_title=) ;
+
+%if ("&where_clause" eq "") %then %do;
+	%let where_clause = 1=1;
+%end;
+
+**** create more variables *******;	
+data temp_mst;
+	set &indata(where=(&where_clause));
+	dep2 = &dep*&wt;
+	dep2_h = &dep_h*&wt;
+	lgd = sum(1,-&dep);
+	lgd_h = sum(1,-&dep_h);	
+	rankey = ranuni(2012);
+run;
+
+
+**** correlation *******;
+ods output PearsonCorr=PearsonCorr;
+proc corr data=temp_mst;
+	var &dep;	
+	with &dep_h;
+	weight &wt ; 	
+run;
+ods output close;
+quit;run;
+
+
+**** RMSE *******;
+%calc_ss(indata= temp_mst, dep=&dep, dep_h=&dep_h, wt=&wt, spl=1);
+
+** output is tmp.sas7bdat **;
+data rmse;
+	set tmp;
+	keep rmse n_obs;
+	call symput("_nobs",n_obs);
+run;
+
+
+**** Lorenz curve and p vs a plot *******;
+proc sort data=temp_mst out=bin_data0;
+	by &dep_h descending rankey;
+run;
+data m10_bin_ins;
+	set bin_data0;
+	&dep_h._q = floor( _N_ / ((1+&_nobs)/&nbins) )+1;
+run;
+
+proc summary data=m10_bin_ins nway missing;
+  class  &dep_h._q;
+  var &wt dep2 dep2_h;
+  output out=_m11_lorenz_ins sum=;
+run;
+
+data prd_lz;
+ set _m11_lorenz_ins;
+ &dep =(dep2/&wt)*_freq_;
+ &dep_h = (dep2_h/&wt)*_freq_;
+ drop &wt dep2 dep2_h;
+run;
+
+proc sort data=prd_lz ;
+	by descending &dep_h._q;
+run;
+
+*******************;
+** actual lorenz **;
+*******************;
+
+proc sort data=temp_mst out=bin_data0;
+	by &dep descending rankey;
+run;
+data tmp_actual;
+	set bin_data0;
+	&dep._q = floor( _N_ / ((1+&_nobs)/&nbins) )+1;
+run;
+
+
+
+proc summary data=tmp_actual nway missing;
+  class  &dep._q;
+  var &wt dep2;
+  output out=_actual_lorenz_ins sum=;
+run;
+
+data act_lz;
+ set _actual_lorenz_ins;
+ &dep = (dep2/&wt)*_freq_;
+ drop &wt dep2;
+run;
+
+proc sort data=act_lz ;
+	by descending &dep._q ;
+run;
+
+
+
+/*
+** PRED vs Actual;
+data pvsa;
+	set prd_lz;
+	Avg_Pred=&dep_h/_FREQ_;
+	Avg_Actual=&dep/_FREQ_;
+	nbin=_N_;
+run;
+
+goptions reset=global gunit=pct border cback=white
+colors=(black blue green red)
+ftitle=swissb ftext=swiss htitle=5 htext=4;
+
+axis1 label=none;
+axis2 label=none;
+
+symbol1
+color=blue
+interpol=join
+value=none
+height=3
+width=2;
+
+symbol2
+color=red
+interpol=join
+value=none
+height=3
+cv=red
+width=2;
+
+title1 "&chart_title";
+
+goptions device=png;
+filename dummyods temp;
+ods html file=dummyods  gpath="&out_dir";
+
+proc gplot data=pvsa;
+	plot Avg_Pred*nbin Avg_Actual*nbin / overlay haxis=axis1 vaxis=axis2 name="&outlorenz";
+run;
+
+ods html close;
+
+title;run;
+
+*/
+
+** calculate Gini and Model Efficiency **;
+** predicted lorenz **;
+proc summary data=prd_lz nway missing; output out=lorenz_sum sum(&dep)=dep_sum sum(_FREQ_)=nobs;
+run;
+
+proc sql;
+	create table lorenz_gini as
+	select a.*, b.dep_sum,b.nobs
+	from prd_lz a, lorenz_sum b;
+quit;run;
+
+data lorenz_gini;
+	set lorenz_gini;
+	retain cumu_dep prev_cumu_dep_pct 0;
+	cumu_dep=sum(cumu_dep,&dep);
+	cumu_dep_pct=cumu_dep/dep_sum;
+	area=(cumu_dep_pct+prev_cumu_dep_pct)/&nbins/2;
+	prev_cumu_dep_pct=cumu_dep_pct;
+run;
+proc summary data=lorenz_gini nway missing; var area; output out=lorenz_gini_summ sum(area)= ;
+run;
+
+
+** actual lorenz **;
+proc summary data=act_lz nway missing; var &dep; output out=lorenz_a_sum sum(&dep)=dep_sum;
+run;
+
+proc sql;
+	create table lorenz_a_gini as
+	select a.*, b.dep_sum
+	from act_lz a, lorenz_a_sum b;
+quit;run;
+
+data lorenz_a_gini;
+	set lorenz_a_gini;
+	retain cumu_dep prev_cumu_dep_pct 0;
+	cumu_dep=sum(cumu_dep,&dep);
+	cumu_dep_pct=cumu_dep/dep_sum;
+  area=(cumu_dep_pct+prev_cumu_dep_pct)/&nbins/2;	
+	prev_cumu_dep_pct=cumu_dep_pct;
+run;
+proc summary data=lorenz_a_gini nway missing; var area; output out=lorenz_a_gini_summ sum(area)=area_max;
+run;
+
+
+** calculate Accuracy index **;
+data accuracy_id;
+	set lorenz_gini end=end_ind;
+	retain cumu_diff cnt 0;
+	diff=abs(&dep - &dep_h)/_FREQ_;
+	cumu_diff=sum(0,cumu_diff,diff);
+	cnt+1;
+	if end_ind=1 then do;
+		accuracy_index=cumu_diff/cnt/(dep_sum/nobs);
+		output;
+	end;
+run;
+
+
+** calculate CLAR **;
+
+%CLAR_ind(indata= temp_mst   , 
+           subset= &where_clause,
+           depvar= lgd          ,
+           depvar_h=lgd_h       , 
+           n_bins = &nbins     ,
+           outdata=clar) ;
+
+
+
+ods listing close;
+ods csv file="&out_dir/&outlorenz..csv";
+proc print data=prd_lz;
+proc print data=act_lz;
+proc print data=clar;
+run;
+ods csv close;
+ods listing;
+
+
+data clar_temp ;
+	set clar;
+	retain cum_obs prev_cumu_obs_pct prev_cumu_match_pct 0;
+	cum_obs = sum(cum_obs,bin_obs);
+	cum_match_pct =cum_match/tot_obs;
+	cumu_obs_pct=cum_obs/tot_obs;
+	clar_area=(cumu_obs_pct-prev_cumu_obs_pct)*(prev_cumu_match_pct+cum_match_pct)/2;
+	prev_cumu_obs_pct=cumu_obs_pct;
+	prev_cumu_match_pct = cum_match_pct ;
+run;
+proc summary data=clar_temp nway missing; var clar_area; output out=clar_temp_summ sum(clar_area)= ;
+run;
+
+*****************************************************;
+**** 5. Default summary                       *******;
+*****************************************************;
+
+options mergenoby=nowarn;
+data tmp_out;
+	merge
+	PearsonCorr (keep=Variable &dep rename=(&dep=correlation))
+	rmse
+	lorenz_gini_summ  ( keep=area )
+	clar_temp_summ( keep = clar_area )
+	accuracy_id (keep = accuracy_index )
+	lorenz_a_gini_summ (keep = area_max )	
+	;
+	area=(area-0.5)*2;
+	model_eff=area/((area_max-0.5)*2);
+	if n_obs <1000 then modified_accuracy_index = accuracy_index * sqrt(n_obs/1000);
+	else modified_accuracy_index = accuracy_index;
+	clar = clar_area/0.5 ;
+run;
+options mergenoby=error;
+
+
+proc sql;                                                                 
+  create table &outdata as  
+    select
+     Variable
+	  ,n_obs
+	  ,correlation
+	  ,rmse
+	  ,area as gini
+	  ,model_eff as modified_gini
+	  ,accuracy_index
+	  ,modified_accuracy_index
+	  ,clar
+    from tmp_out;
+quit; 
+
+proc print data=&outdata noobs;
+run;
+
+%mend validation_lgd1;
+
+*****************************************************;
+*****************************************************;
+**** Calculate RMSE and other                  ******;
+*****************************************************;
+*****************************************************;
+%macro calc_ss(indata=, dep=, dep_h=, wt=, spl=);
+	
+	ods listing close;
+	
+	data tmp_spl;
+		set &indata;
+		if ranuni(1)<=&spl;
+	run;
+	
+	data tmp;
+		set tmp_spl end=tmp_end;
+		
+		retain tss ssr sse sse2 wt_sum;
+		
+		if _N_=1 then do;
+			tss=0;
+			ssr=0;
+			sse=0;
+			sse2=0;
+			wt_sum=0;
+		end;
+		
+		sse=sum(sse, &wt * ((&dep   - &dep_h   )**2) );
+		wt_sum = sum(wt_sum, &wt);
+		
+		if tmp_end=1 then do;
+			
+			** rsq=1-sse/tss;
+			mse  = sse / wt_sum;
+			rmse =sqrt(mse);
+			n_obs=_N_;
+			
+			keep
+			n_obs
+			sse
+			wt_sum
+			mse
+			rmse
+			;
+			output;
+		end;
+	run;
+	
+	ods listing;
+	
+	
+	proc print data=tmp noobs;
+		title "RMSE of &dep vs. &dep_h";
+	run;
+	
+	title;
+	run;
+	
+%mend calc_ss;
+
+*****************************;
+*****************************;
+*** Calculate CLAR  v04   ***;
+*****************************;
+*****************************;
+
+
+*** Buckets can be any number greater than 0                                  ***;
+*** Bucket was defined to be equal size                                       ***;
+
+
+%macro CLAR_ind(indata=, subset=, depvar=, depvar_h=,  n_bins= , outdata=);
+
+options mergenoby=nowarn;
+
+*** define bucket by actual LGD rank order ***; 
+
+data _indata;
+	set &indata;
+	where &subset;
+	rankey = ranuni(2012);
+	keep &depvar &depvar_h rankey ;	
+run;
+	
+proc sort data=_indata;
+	by descending &depvar rankey;
+run;
+
+data _indata_v0 ;
+	set _indata  nobs=_nobs;
+	t_rank_a = floor( _N_ / ((1+_nobs)/&n_bins) )+1;	
+run;
+
+proc summary data = _indata_v0 nway missing;
+class t_rank_a ;
+output out=depvar_rank(drop=_type_ rename =(_freq_ = rank_a_obs)) ;
+run ;
+
+proc sort data = depvar_rank ; by t_rank_a ; run;  
+
+*** check if there is bucket without observation ***;
+
+	%do k = 1 %to &n_bins ;
+		data bucket&k ;
+			t_rank_a=&k ;
+		run;
+	%end;
+	  
+ data bucket_combine ;
+ 	set 
+ 	  %do k = 1 %to &n_bins ;
+ 	    bucket&k
+ 	   %end;
+ 	   ;
+ run;
+
+data depvar_rank2 ;
+	merge depvar_rank(in=a)
+	      bucket_combine(in=b);
+        by t_rank_a;
+        if missing(rank_a_obs) then rank_a_obs = 0 ;
+run;
+
+*** append cum obs by actual bucket   ***; 
+
+data t1 ;
+	set depvar_rank2 ;
+	by t_rank_a;
+	retain cumm_rank_obs 0 ;	       
+	cumm_rank_obs = sum(rank_a_obs, cumm_rank_obs);
+run ;
+
+proc transpose data = t1(keep =cumm_rank_obs)
+	             out  = t1_hz
+	             name = cum_rank_obs
+	             prefix = rank_N
+	             ;
+run;
+
+data t2;
+	set t1_hz;
+   merge_id_temp = 1 ;                
+run ;
+
+proc sort data = _indata_v0 out = _indata_v1 ; by descending &depvar_h rankey; run ;
+
+data _indata_v2 ;
+ set _indata_v1 ;
+ by descending &depvar_h ;
+ retain rank_obs 0;
+ rank_obs = sum(rank_obs,1);
+ merge_id_temp = 1 ;
+run ;
+
+
+*** define prediction bucket according to the rank order   ***; 
+*** prediction bucket share the same size as actual bucket ***;
+
+data _indata_v3 ;
+merge _indata_v2(in=a) 
+      t2(in=b drop = cum_rank_obs); 
+      by merge_id_temp ;
+ 
+  array cum_rank_obs{*} rank_N1 - rank_N&n_bins ; 
+  array rank_p{*} rank_p1 - rank_p&n_bins ;
+  array cum_right{*} cum_right1 - cum_right&n_bins ;
+  
+ do i = 1 ;
+   if rank_obs <= cum_rank_obs{i} then t_rank_p = i ; 
+ end ; 
+ drop i ;
+ 
+ do i = 2 to dim(cum_rank_obs);
+   if cum_rank_obs{i-1}< rank_obs <= cum_rank_obs{i} then t_rank_p = i ;
+ end;
+ drop i ;
+   
+ do i = 1 to dim(cum_right) ;
+ cum_right{i} =(t_rank_p <= i and t_rank_a <= i );
+ rank_p{i} = (t_rank_p = i);
+ end;
+ drop i ;
+run;
+
+ proc summary data = _indata_v3 nway missing ;
+ output out = _sum_indata_v3 (drop= _type_ ) 
+ sum(cum_right:) = 
+ sum(rank_p:) = ;
+ run ;
+
+data &outdata ;
+	 set _sum_indata_v3;
+	 array cum_right(*)cum_right1 - cum_right&n_bins ;
+	 array rank_N(*)rank_p1 - rank_p&n_bins ;
+	 do i = 1 to dim(cum_right) ;
+	 	  bin_N = i ;
+	 	  bin_obs = rank_N{i};
+	 	  cum_match = cum_right{i} ;
+	 	  tot_obs = _freq_ ;
+	 	  output ;
+	 end;
+	 keep bin_N bin_obs cum_match tot_obs ;
+run;
+
+%mend CLAR_ind;
+
+**********######################################################################*************;
+**********##########              08. VIF Checking                    ##########*************;
+**********##########                Jipeng Xiong                      ##########*************;
+**********######################################################################*************;
+
+%macro VIF_Check (indata=,vif_threshold=,vif_list=,wgt=, vif_param_orig=,vif_param_final= , include_to_start = 0, ignore_initial_VIF = 0);
+
+ods output ParameterEstimates   = vif_Parameter;
+proc reg data=&indata;
+	model &dep = &vif_list /vif collin;
+	weight &wgt;
+run;
+ods output close;
+
+**** output original VIF dataset ***;
+
+data &vif_param_orig;
+	set vif_Parameter (drop= Model DF Estimate StdErr tValue Probt);
+run;
+
+*** Exclude the High VIF variable one by one ***;
+%let Cnt=1; 
+%do %while(%scan(&vif_list,&Cnt) ne); 
+    %let Cnt=%eval(&Cnt+1);
+%end;
+%let nvars=%eval(&Cnt-1);
+
+data text_list;
+	set &Vif_Param_Orig (keep=Variable);
+	length text_file $50.;
+	  if _N_=1 then text_file = '%let vif_round_list=';
+	  else text_file = variable;
+	high_vif_ind=0;
+run;
+
+%let start_no = %eval(&include_to_start+1);
+
+%do X = &start_no %to &nvars;
+data _NULL_;
+	set text_list;
+	file "&tgt_dir./vif_var_list.txt";
+	if _N_<=&X+1 and high_vif_ind=0 then put text_file;
+run;
+
+data _NULL_;
+	file "&tgt_dir./vif_var_list.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir./vif_var_list.txt";
+
+ods output ParameterEstimates   = vif_round_Parameter;
+proc reg data=&indata;
+	model &dep = &vif_round_list /vif collin;
+	weight &wgt;
+run;
+ods output close;
+
+data _NULL_;
+	set vif_round_Parameter(where = (variable ^="Intercept")) end=end_ind;
+	retain max_vif 0;
+	call symput("high_vif_var&X", 0);
+	if VarianceInflation > max_vif 
+		%if &ignore_initial_VIF. %then %do;
+			and _N_ > &include_to_start.
+		%end;
+	then max_vif = VarianceInflation;
+	if end_ind=1 and max_vif>&vif_threshold then call symput("high_vif_var&X", variable); 
+run;
+
+data text_list;
+	set text_list;
+	if variable = "&&high_vif_var&X" then high_vif_ind=1;
+run;
+
+%end;
+
+data final_var;
+	set text_list;
+	if high_vif_ind=1 then delete;
+run;
+
+data _NULL_;
+	set final_var;
+	file "&tgt_dir./vif_var_list.txt";
+  put text_file;
+run;
+
+data _NULL_;
+	file "&tgt_dir./vif_var_list.txt" mod;
+	put ';';
+run;
+
+%include "&tgt_dir./vif_var_list.txt";
+
+ods output ParameterEstimates   = &Vif_Param_Final;
+proc reg data=&indata;
+	model &dep = &vif_round_list /vif collin;
+	weight &wgt;
+run;
+ods output close;
+
+data &Vif_Param_Final; set &Vif_Param_Final (drop= Model DF Estimate StdErr tValue Probt);run;
+
+%Mend VIF_Check;
+
+**********######################################################################*************;
+**********##########           09. Final Variable Adjustment          ##########*************;
+**********##########              Kevin Wang/Jipeng Xiong             ##########*************;
+**********######################################################################*************;
+
+*******************************;
+********** PD  ****************;
+*******************************;
+%Macro PD_Final_Var_Adj (indata=,Seg=,dep=,weight=,sig_lvl=, Orig_Est_file=,Out_Perf_All=,reduce_vars=1, nbins=20);
+
+%If &reduce_vars = 0 %Then %Do;
+
+ods output ParameterEstimates    = Estimates_seg;
+proc logistic data= &indata descending namelen=32;         
+  model &dep = &final_adj_list   / sls = &sig_lvl sle = &sig_lvl lackfit rsq ctable details;
+  weight &weight;
+run;
+ods output close;
+
+data initial_temp1; length Variable $32.; set Estimates_seg;run;
+
+proc sort data=initial_temp1 out=initial_temp2(where=(variable ^='Intercept')); by descending WaldChiSq;run;
+
+data &Orig_Est_file;
+	set initial_temp1 (where=(variable ='Intercept'))
+	    initial_temp2;
+run;
+ 
+%End;
+
+%IF &reduce_vars = 1 %Then %Do;
+
+*** Refit the models by excluding one variable at a time ***;
+
+%let rd=1;
+%let iStop=0;
+
+%DO %WHILE (&iStop=0);
+
+ods output ParameterEstimates    = Estimates_seg&Seg._rd&rd    ;
+proc logistic data= &indata descending namelen=32;         
+  model &dep = &final_adj_list   / sls = &sig_lvl sle = &sig_lvl lackfit rsq ctable details;
+  weight &weight;
+run;
+ods output close;
+
+*** drop the bottom variable    *****;
+proc sort data = Estimates_seg&Seg._rd&rd out = Estimates_temp_seg&Seg._rd&rd(keep = Variable WaldChiSq where=(Variable ne 'Intercept')); by descending WaldChiSq; run;
+
+data Estimates_Order_seg&Seg._rd&rd
+	   remove_var_&rd;
+  set Estimates_temp_seg&Seg._rd&rd end=last_record ;
+  if last_record = 1 then output remove_var_&rd;
+  else output Estimates_Order_seg&Seg._rd&rd;
+  
+  if last_record = 1 and _N_ = 1 then do;
+    call symput('iStop',1);
+	end;
+run;
+
+data remove_var_&rd;
+	set remove_var_&rd;
+	round = &rd;
+run;
+
+%IF &iStop=0 %THEN %DO;
+
+data _NULL_;
+	set Estimates_Order_seg&Seg._rd&rd(keep = Variable);
+	file "&tgt_dir./S17_var_list_&Seg._rd&rd..txt";
+	if _N_=1 then put '%let final_adj_list =';
+	put Variable;
+run;
+
+data _NULL_; file "&tgt_dir./S17_var_list_&Seg._rd&rd..txt" mod; put ';'; run;
+
+%include "&tgt_dir./S17_var_list_&Seg._rd&rd..txt";
+%let rd=%eval(&rd+1);
+
+%END;
+
+%IF &iStop=1 %THEN %DO;
+
+data initial_temp1; length Variable $32.; set Estimates_seg&Seg._rd1;run;
+
+proc sort data=initial_temp1 out=initial_temp2(where=(variable ^='Intercept')); by descending WaldChiSq;run;
+
+data &Orig_Est_file;
+	set initial_temp1 (where=(variable ='Intercept'))
+	    initial_temp2;
+run;
+   
+%let tmp=%eval(&rd);
+
+%Do i = 2 %to &tmp;
+data Estimates_seg&Seg._rd&i;set Estimates_seg&Seg._rd&i;round = &i;segment = &Seg;run;
+proc append base=Estimates_seg&Seg data=Estimates_seg&Seg._rd&i;run; 
+
+%END;
+%END;
+%END;
+
+*** Score the segment level models, check the performance by rounds   ***;
+
+data rounds; 
+  set Estimates_Order_seg&Seg._rd1 end = last;
+  rd = compress((_N_+1)!!"");
+  if last;
+  call symput('rd' , trim(rd)); 
+run;
+
+%do round = 1 %to &rd;
+
+%lgtscore(indata  = &indata
+         ,outdata = Seg&Seg._score_rd&round
+         ,regest  = Estimates_seg&Seg._rd&round
+         ,depvar  = &dep
+         ,depvarh = &dep._Esti1
+         );
+    
+data Seg&Seg._score_rd&round;
+	  set Seg&Seg._score_rd&round(keep = &key &ref_mth &dep &dep._Esti1 &weight);
+	  round = &round;
+	  segment = &Seg;
+run;
+
+%validation_pd1(indata=Seg&Seg._score_rd&round,where_clause=1=1,dep=&dep,dep_h=&dep._Esti1,wt=&weight,nbins=&nbins, out_dir=&tgt_dir,outdata=perf_seg&Seg._rd&round,outlorenz=perf_seg&Seg._rd&round,chart_title=USCS PD QRE Seg &Seg Round &round);
+                                   
+%end;
+
+data var_name_order(rename=(Variable=drop_var));
+  	set remove_var_1 - remove_var_&rd;
+  	keep round Variable;
+  run;
+  
+proc sort data=var_name_order; by round;run;
+
+%DO i = 1 %TO &rd; 
+  data perf_seg&Seg._rd&i; set perf_seg&Seg._rd&i; 
+  	round = &i; 
+  	segment = &Seg; run;
+%END;
+
+data perf_seg&Seg._all;set perf_seg&Seg._rd:;by round;run;
+
+data &Out_Perf_All;
+	retain round n_obs n_df correlation	rmse	modified_gini	modified_accuracy_index	k_s HL_chi_sq drop_var;
+	merge perf_seg&Seg._all (in=a)
+	      var_name_order (in=b)
+	      ;
+	by round;
+	if (a);
+	drop Variable wt_sum wgt_dep segment accuracy_index;
+run;
+	    
+%End;
+
+%MEND PD_Final_Var_Adj;
+
+*******************************;
+********** EAD ****************;
+*******************************;
+
+%Macro EAD_Final_Var_Adj (indata=, Seg=,dep=,wgt = ,sig_lvl=, Orig_Est_file=,Out_Perf_All=, nbins=20);
+
+*** Refit the models by excluding one variable at a time ***;
+%let rd=1;
+%let iStop=0;
+
+%DO %WHILE (&iStop=0);
+
+ods output ParameterEstimates    = Estimates_seg&Seg._rd&rd    ;
+proc reg data= &indata;         
+  model &dep = &final_adj_list;
+  %if %eval("&wgt." ne "") %then %do;
+  weight &wgt.;
+  %end;
+run;
+ods output close;
+
+*** drop the bottom variable    *****;
+data Estimates_seg&Seg._rd&rd; set Estimates_seg&Seg._rd&rd; abs_tvalue =abs(tValue);run;
+proc sort data=Estimates_seg&Seg._rd&rd out = Estimates_temp_seg&Seg._rd&rd(keep = Variable tValue abs_tvalue where=(variable ^='Intercept'));by descending abs_tvalue;run;
+
+data Estimates_Order_seg&Seg._rd&rd
+	   remove_var_&rd;
+  set Estimates_temp_seg&Seg._rd&rd (drop=abs_tvalue) end=last_record ;
+  if last_record = 1 then output remove_var_&rd;
+  else output Estimates_Order_seg&Seg._rd&rd;
+  
+  if last_record = 1 and _N_ = 1 then do;
+    call symput('iStop',1);
+	end;
+run;
+
+data remove_var_&rd;
+	set remove_var_&rd;
+	round = &rd;
+run;
+
+%IF &iStop=0 %THEN %DO;
+
+data _NULL_;
+	set Estimates_Order_seg&Seg._rd&rd(keep = Variable);
+	file "&tgt_dir./S17_var_list_&Seg._rd&rd..txt";
+	if _N_=1 then put '%let final_adj_list =';
+	put Variable;
+run;
+
+data _NULL_; file "&tgt_dir./S17_var_list_&Seg._rd&rd..txt" mod; put ';'; run;
+
+%include "&tgt_dir./S17_var_list_&Seg._rd&rd..txt";
+%let rd=%eval(&rd+1);
+
+%END;
+
+%IF &iStop=1 %THEN %DO;
+
+data initial_temp1; length Variable $32.; set Estimates_seg&Seg._rd1;run;
+
+proc sort data=initial_temp1 out=initial_temp2(where=(variable ^='Intercept')); by descending abs_tValue;run;
+
+data &Orig_Est_file;
+	set initial_temp1 (where=(variable ='Intercept') drop=abs_tValue)
+	    initial_temp2 (drop=abs_tValue);
+run;
+   
+%let tmp=%eval(&rd);
+
+%Do i = 2 %to &tmp;
+data Estimates_seg&Seg._rd&i;set Estimates_seg&Seg._rd&i;round = &i;segment = &Seg;run;
+proc append base=Estimates_seg&Seg data=Estimates_seg&Seg._rd&i;run; 
+
+%END;
+%END;
+%END;
+
+*** Score the segment level models, check the performance by rounds   ***;
+
+data rounds; 
+  set Estimates_Order_seg&Seg._rd1 end = last;
+  rd = compress((_N_+1)!!"");
+  if last;
+  call symput('rd' , trim(rd)); 
+run;
+
+%do round = 1 %to &rd;
+
+%regscore(indata  = &indata
+         ,outdata = Seg&Seg._score_rd&round
+         ,regest  = Estimates_seg&Seg._rd&round
+         ,depvar  = &dep
+         ,depvarh = &dep._Esti1
+         );
+    
+data Seg&Seg._score_rd&round;
+	  set Seg&Seg._score_rd&round;
+	  round = &round;
+	  segment = &Seg;
+	  wgt = 1;
+	  
+    dep_var_translated      = %transform_dep_var(&dep.);
+    dep_var_translated_Esti1= %transform_dep_var(&dep._Esti1);
+
+    keep 
+     &key 
+     &ref_mth 
+     &dep 
+     &dep._Esti1
+     dep_var_translated
+     dep_var_translated_Esti1
+     round   
+     segment 
+     wgt     
+      ;
+
+run;
+
+%validation_ead1(indata=Seg&Seg._score_rd&round,where_clause=1=1,
+                 dep=&dep,dep_h=&dep._Esti1,nbins=&nbins, 
+                 out_dir=&tgt_dir,outdata=perf_seg&Seg._rd&round,
+                 outlorenz=perf_seg&Seg._rd&round,chart_title=USCS EAD Seg &Seg Round &round);
+                                  
+%end;
+
+data var_name_order(rename=(Variable=drop_var));
+  	set remove_var_1 - remove_var_&rd;
+  	keep round Variable;
+  run;
+  
+proc sort data=var_name_order; by round;run;
+
+%DO i = 1 %TO &rd; 
+  data perf_seg&Seg._rd&i; set perf_seg&Seg._rd&i; 
+  	round = &i; 
+  	segment = &Seg; run;
+%END;
+
+data perf_seg&Seg._all;set perf_seg&Seg._rd:;by round;run;
+
+data &Out_Perf_All;
+	retain round n_obs correlation	rmse	modified_gini	modified_accuracy_index drop_var;
+	merge perf_seg&Seg._all (in=a)
+	      var_name_order (in=b)
+	      ;
+	by round;
+	if (a);
+	drop Variable wt_sum wgt_dep segment accuracy_index;
+run;
+	  
+%MEND EAD_Final_Var_Adj;
+
+*******************************;
+********** LGD ****************;
+*******************************;
+
+%Macro LGD_Final_Var_Adj (indata=,Seg=,dep=, div=, weight=,sig_lvl=, Orig_Est_file=,Out_Perf_All=, reduce_vars=1,nbins=20);
+
+%if &reduce_vars =0 %Then %Do;
+  ods output ParameterEstimates    = Estimates_seg;
+   proc logistic data= &indata descending namelen=32;         
+     model &dep/&div = &final_adj_list  ;
+     weight &weight/norm;
+   run;
+ods output close;
+
+data initial_temp1; length Variable $32.; set Estimates_seg;run;
+
+proc sort data=initial_temp1 out=initial_temp2(where=(variable ^='Intercept')); by descending WaldChiSq;run;
+
+data &Orig_Est_file;
+	set initial_temp1 (where=(variable ='Intercept'))
+	    initial_temp2;
+	drop DF;
+run;
+
+%End;
+
+%if &reduce_vars =1 %Then %Do;   
+
+*** Refit the models by excluding one variable at a time ***;
+
+%let rd=1;
+%let iStop=0;
+
+%DO %WHILE (&iStop=0);
+
+ods output ParameterEstimates    = Estimates_seg&Seg._rd&rd    ;
+proc logistic data= &indata descending namelen=32;         
+  model &dep/&div = &final_adj_list ;
+  weight &weight/norm;
+run;
+ods output close;
+
+*** drop the bottom variable    *****;
+*Updated on 2014-08-14 Yongkang Wu*;
+proc sort data = Estimates_seg&Seg._rd&rd out = Estimates_temp_seg&Seg._rd&rd(keep = Variable WaldChiSq where=(Variable ne 'Intercept')); by descending WaldChiSq; run;
+
+data Estimates_Order_seg&Seg._rd&rd;
+  set Estimates_temp_seg&Seg._rd&rd end=last_record ;
+  if last_record = 1 and _N_ = 1 then do;
+    call symput('iStop',1);
+	end;
+  else if last_record = 1 then delete;
+run;
+
+%IF &iStop=0 %THEN %DO;
+
+data _NULL_;
+	set Estimates_Order_seg&Seg._rd&rd(keep = Variable);
+	file "&tgt_dir./S17_var_list_&Seg._rd&rd..txt";
+	if _N_=1 then put '%let final_adj_list =';
+	put Variable;
+run;
+
+data _NULL_; file "&tgt_dir./S17_var_list_&Seg._rd&rd..txt" mod; put ';'; run;
+
+%include "&tgt_dir./S17_var_list_&Seg._rd&rd..txt";
+%let rd=%eval(&rd+1);
+
+%END;
+
+%IF &iStop=1 %THEN %DO;
+
+data initial_temp1; length Variable $32.; set Estimates_seg&Seg._rd1;run;
+
+proc sort data=initial_temp1 out=initial_temp2(where=(variable ^='Intercept')); by descending WaldChiSq;run;
+
+data &Orig_Est_file;
+	set initial_temp1 (where=(variable ='Intercept'))
+	    initial_temp2;
+	drop DF;
+run;
+   
+%let tmp=%eval(&rd);
+
+%Do i = 2 %to &tmp;
+data Estimates_seg&Seg._rd&i;set Estimates_seg&Seg._rd&i;round = &i;segment = &Seg;run;
+proc append base=Estimates_seg&Seg data=Estimates_seg&Seg._rd&i;run; 
+
+%END;
+%END;
+%END;
+
+*** Score the segment level models, check the performance by rounds   ***;
+
+data rounds; 
+  set Estimates_Order_seg&Seg._rd1 end = last;
+  rd = compress((_N_+1)!!"");
+  if last;
+  call symput('rd' , trim(rd)); 
+run;
+
+%do round = 1 %to &rd;
+
+%lgtscore(indata  = &indata
+         ,outdata = Seg&Seg._score_rd&round
+         ,regest  = Estimates_seg&Seg._rd&round
+         ,depvar  = &dep
+         ,depvarh = &dep._Esti1
+         );
+    
+data Seg&Seg._score_rd&round;
+	  set Seg&Seg._score_rd&round(keep = &key &ref_mth &dep &dep._Esti1 &weight);
+	  round = &round;
+	  segment = &Seg;
+run;
+
+%validation_lgd1(indata=Seg&Seg._score_rd&round,where_clause=1=1,dep=&dep,dep_h=&dep._Esti1,wt=&weight,nbins=&nbins, out_dir=&tgt_dir,outdata=perf_seg&Seg._rd&round,outlorenz=perf_seg&Seg._rd&round,chart_title=USCS PD QRE Seg &Seg Round &round);
+                                  
+%end;
+
+data var_name_order;
+  	set Estimates_temp_seg&Seg._rd1(keep=variable);
+  	round = &rd-_N_+1;
+  	rename variable=drop_var;
+  run;
+  
+proc sort data=var_name_order; by round;run;
+
+%DO i = 1 %TO &rd; 
+  data perf_seg&Seg._rd&i; set perf_seg&Seg._rd&i; 
+  	round = &i; 
+  	segment = &Seg; run;
+%END;
+
+data perf_seg&Seg._all;set perf_seg&Seg._rd:;by round;run;
+
+data &Out_Perf_All;
+	retain round n_obs correlation	rmse modified_gini modified_accuracy_index	clar drop_var;
+	merge perf_seg&Seg._all (in=a)
+	      var_name_order (in=b)
+	      ;
+	by round;
+	if (a);
+	drop Variable wt_sum wgt_dep segment gini accuracy_index;
+run;
+
+%End;
+	    
+%MEND LGD_Final_Var_Adj;
+
+**********######################################################################*************;
+**********##########              10. Scoring                         ##########*************;
+**********##########                                                  ##########*************;
+**********######################################################################*************;
+
+%macro lgtscore(indata=,outdata=,regest=,depvar=,depvarh=);
+
+  data coefs;
+    set &regest (where=(Estimate ne .));
+    if lowcase(Variable)='intercept' then
+      call symput ('intercept', Estimate);
+    else
+      output coefs;
+  run;
+
+  data _null_;
+    set coefs nobs=nobs;
+    call symput('beta'||(compress(put(_n_,8.))),Estimate);
+    call symput('var'||(compress(put(_n_,8.))),Variable);
+    call symput('nvars',nobs);
+  run;
+
+  %macro scorline;
+    %do j=1 %to &nvars;
+        +(&&beta&j)*&&var&j
+    %end;
+  %mend scorline;
+
+  data &outdata;
+    set &indata;
+    &depvarh=1/(1+exp(-(&intercept %scorline)));
+  run;
+
+%mend lgtscore;
+
+**** LR scoring for logistic model (average intercept) ****;
+
+%macro lgtscore2(indata=,outdata=,regest=,depvar=,depvarh=);
+
+  data coefs;
+    set &regest (where=(Estimate ne .));
+    if lowcase(Variable)='intercept' then
+      call symput ('intercept', Estimate);
+    else
+      output coefs;
+  run;
+
+  data _null_;
+    set coefs nobs=nobs;
+    call symput('beta'||(compress(put(_n_,8.))),Estimate);
+    call symput('var'||(compress(put(_n_,8.))),Variable);
+    call symput('nvars',nobs);
+  run;
+
+  %macro scorline;
+    %do j=1 %to &nvars;
+        +(&&beta&j)*&&var&j
+    %end;
+  %mend scorline;
+
+  data &outdata;
+    set &indata;
+    array a_time(*) time_ind_Q01 - time_ind_Q32;
+    array scr_time(*) &depvarh._1 - &depvarh._32;
+    do i1 = 1 to 32;
+      do i2 = 1 to 32;
+        if i2 = i1 then a_time(i2) = 1; else a_time(i2) = 0;
+      end;
+      scr_time(i1)=1/(1+exp(-(&intercept %scorline)));
+    end;
+    &depvarh = mean(of &depvarh._1 - &depvarh._32);
+    drop &depvarh._1 - &depvarh._32;
+  run;
+  
+%mend lgtscore2;
+
+**** regression scoring for linear model ****;
+
+%macro regscore(indata=,outdata=,regest=,depvar=,depvarh=);
+
+  data coefs;
+    set &regest (where=(Estimate ne .));
+    if lowcase(Variable)='intercept' then
+      call symput ('intercept', Estimate);
+    else
+      output coefs;
+  run;
+
+  data _null_;
+    set coefs nobs=nobs;
+    call symput('beta'||(compress(put(_n_,8.))),Estimate);
+    call symput('var'||(compress(put(_n_,8.))),Variable);
+    call symput('nvars',nobs);
+  run;
+
+  %macro scorline;
+    %do k=1 %to &nvars;
+        +(&&beta&k)*&&var&k
+    %end;
+  %mend scorline;
+
+  data &outdata;
+    set &indata;
+    &depvarh=&intercept %scorline;
+  run;
+
+%mend regscore;
+
+**********######################################################################*************;
+**********##########              11. Others                          ##########*************;
+**********##########             Jipeng Xiong                         ##########*************;
+**********######################################################################*************;
+
+*** 9.1 create calendar year indicators ****;
+
+%macro cal_year_ind (ref_mth=,start_mth=, end_mth=);
+	
+  cal_year_ind=0;
+  if &start_mth <= &ref_mth <= &end_mth then do;
+  	 cal_year_ind = int(&ref_mth/100);
+  end;
+%Mend cal_year_ind;
+
+
+%macro quarter_time_ind;
+array a_time(*) time_ind_Q01 - time_ind_Q32;
+  do i = 1 to 32;
+    a_time(i) = (i*3-2 <= int((&ref_mth - 200400)/100)*12 + mod((&ref_mth - 200400),100) <= i*3);
+  end;
+
+%Mend quarter_time_ind;
+
+%macro semester_time_ind;
+	  array a_time_&region.(*) time_ind_&region._H01 - time_ind_&region._H16;
+    do i = 1 to 16;
+      a_time_&region.(i) = (i*6-5 <= int((&ref_mth - 200400)/100)*12 + mod((&ref_mth - 200400),100) <= i*6);
+    end;
+%mend semester_time_ind; 
+
+*** 9.2a MAS transformation macro ****;
+
+%macro trfm(var,md,min,max,trfm);
+if &var= . then t&var=&md;
+else t&var=&var;
+t&var=min(max(t&var,&min),&max);
+if &trfm=1 then do; if t&var le 0.0001 then t&var=log(0.0001); else t&var=log(t&var); end;
+%mend trfm;
+
+%macro itrfm(var,md,min,max,trfm);
+if &var= . then it&var=&md;
+else it&var=&var;
+it&var=min(max(it&var,&min),&max);
+if &trfm=1 then do; if it&var le 0.0001 then it&var=log(0.0001); else it&var=log(it&var); end;
+%mend itrfm;
+
+%macro prefix_trfm(var,pref,md,min,max,trfm);
+if &var= . then &pref.&var=&md;
+else &pref.&var=&var;
+&pref.&var=min(max(&pref.&var,&min),&max);
+if &trfm=1 then do; if &pref.&var le 0.0001 then &pref.&var=log(0.0001); else &pref.&var=log(&pref.&var); end;
+%mend prefix_trfm;
+
+*** 9.2b New MAS transformation macro ****;
+%macro new_trfm(var,zd,md,min,max,trfm);
+if &var= . then t&var=&md;
+else if &var= 0 then t&var=&zd;
+else t&var=&var;
+t&var=min(max(t&var,&min),&max);
+if &trfm=1 then do; if t&var le 0.0001 then t&var=log(0.0001);else t&var=log(t&var);end;
+else if &trfm=2 then do; if t&var le 0 then t&var=0; else t&var=sqrt(t&var); end;
+else do;t&var=t&var; end;
+%mend new_trfm;
+
+%macro new_itrfm(var,zd,md,min,max,trfm);
+if &var= . then it&var=&md;
+else if &var= 0 then it&var=&zd;
+else it&var=&var;
+it&var=min(max(it&var,&min),&max);
+if &trfm=1 then do; if it&var le 0.0001 then it&var=log(0.0001); else it&var=log(it&var); end;
+else if &trfm=2 then do; if it&var le 0 then it&var=0; else it&var=sqrt(it&var); end;
+else do;it&var=it&var; end;
+%mend new_itrfm;
+
+      
+*** 9.3 Model Performance Over Time ****;
+
+%Macro PD_Mdl_Perf_Overtime (indata=,start_yr=,end_yr=,outfile=,nbins=20);
+	
+	%DO i = &start_yr %TO &end_yr;
+	
+    %validation_PD1(indata=&indata ,where_clause= insample=1 and cal_year_ind=&i,
+                    dep=&dep ,dep_h=&dep._h  ,wt=&weight,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_ins_&i ,outlorenz=in_sample_s&Seg._&i, chart_title=Basel Inspl);
+                    
+    %validation_PD1(indata=&indata ,where_clause= insample=0 and cal_year_ind=&i ,
+                    dep=&dep ,dep_h=&dep._h  ,wt=&weight,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_outs_&i ,outlorenz=out_of_sample_s&Seg._&i, chart_title=Basel Inspl); 
+                                       
+    data out_ins_&i;set out_ins_&i;obs=&i;insample=1;run;
+    data out_outs_&i;set out_outs_&i;obs=&i;insample=0;run;
+    
+  %END;
+  
+  data &outfile;
+  	retain obs insample;
+  	set out_ins_:
+  	    out_outs_:
+  	    ;
+  	by obs;
+  	drop variable;
+  	rename obs=year;
+  run;
+ 
+%MEND PD_Mdl_Perf_Overtime;     
+
+%Macro EAD_Mdl_Perf_Overtime (indata=,dep= ,dep_h=,start_yr=,end_yr=,outfile=,nbins=20);
+	
+	%DO i = &start_yr %TO &end_yr;
+	
+    %validation_EAD1(indata=&indata ,where_clause= insample=1 and cal_year_ind=&i,
+                    dep=&dep ,dep_h=&dep_h  ,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_ins_&i ,outlorenz=in_sample_s&Seg._&i, chart_title=Basel Inspl);
+                    
+    %validation_EAD1(indata=&indata ,where_clause= insample=0 and cal_year_ind=&i ,
+                    dep=&dep ,dep_h=&dep_h  ,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_outs_&i ,outlorenz=out_of_sample_s&Seg._&i, chart_title=Basel Inspl); 
+                                       
+    data out_ins_&i;set out_ins_&i;obs=&i;insample=1;run;
+    data out_outs_&i;set out_outs_&i;obs=&i;insample=0;run;
+    
+  %END;
+  
+  data &outfile;
+  	retain obs insample;
+  	set out_ins_:
+  	    out_outs_:
+  	    ;
+  	by obs;
+  	drop variable;
+  	rename obs=year;
+  run;
+ 
+%MEND EAD_Mdl_Perf_Overtime; 
+
+%Macro LGD_Mdl_Perf_Overtime (indata=,start_yr=,end_yr=,outfile=,nbins=20);
+	
+	%DO i = &start_yr %TO &end_yr;
+	
+    %validation_LGD1(indata=&indata ,where_clause= insample=1 and cal_year_ind=&i,
+                    dep=&dep ,dep_h=&dep._h  ,wt=&weight,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_ins_&i ,outlorenz=in_sample_s&Seg._&i, chart_title=Basel Inspl);
+                    
+    %validation_LGD1(indata=&indata ,where_clause= insample=0 and cal_year_ind=&i ,
+                    dep=&dep ,dep_h=&dep._h  ,wt=&weight,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_outs_&i ,outlorenz=out_of_sample_s&Seg._&i, chart_title=Basel Inspl); 
+                                       
+    data out_ins_&i;set out_ins_&i;obs=&i;insample=1;run;
+    data out_outs_&i;set out_outs_&i;obs=&i;insample=0;run;
+    
+  %END;
+  
+  data &outfile;
+  	retain obs insample;
+  	set out_ins_:
+  	    out_outs_:
+  	    ;
+  	by obs;
+  	drop variable;
+  	rename obs=year;
+  run;
+ 
+%MEND LGD_Mdl_Perf_Overtime;    
+
+%Macro LGD_Perf_Overtime_LR (indata=,start_yr=,end_yr=,outfile=,nbins=20);
+	
+	%DO i = &start_yr %TO &end_yr;
+	
+    %validation_LGD1(indata=&indata ,where_clause= insample=1 and cal_year_ind=&i,
+                    dep=&dep ,dep_h=&dep._lr  ,wt=&weight,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_ins_&i ,outlorenz=in_sample_s&Seg._&i, chart_title=Basel Inspl);
+                    
+    %validation_LGD1(indata=&indata ,where_clause= insample=0 and cal_year_ind=&i ,
+                    dep=&dep ,dep_h=&dep._lr  ,wt=&weight,nbins=&nbins, 
+                    out_dir=&tgt_dir, outdata=out_outs_&i ,outlorenz=out_of_sample_s&Seg._&i, chart_title=Basel Inspl); 
+                                       
+    data out_ins_&i;set out_ins_&i;obs=&i;insample=1;run;
+    data out_outs_&i;set out_outs_&i;obs=&i;insample=0;run;
+    
+  %END;
+  
+  data &outfile;
+  	retain obs insample;
+  	set out_ins_:
+  	    out_outs_:
+  	    ;
+  	by obs;
+  	drop variable;
+  	rename obs=year;
+  run;
+ 
+%MEND LGD_Perf_Overtime_LR; 
+
+*** 9.4 Output CSV file ***;
+
+%Macro Output_CSV (indata=,outfile=);
+	
+ods csv file="&outfile";
+proc print data=&indata;
+run;
+ods csv close;         
+
+%Mend Output_CSV; 
+
+*** 9.5 Spearman Correlation Overtime ***;
+
+%Macro Corr_Overtime (indata=,dep=,corr_check_list=,start_yr=,end_yr=,outfile=);
+
+%Do x = &start_yr %TO &end_yr;
+%Spearman_Corr_Check (indata= &indata, indata_subset= (cal_year_ind=&x), outdata=spearman_correlation_&x, 
+                      dep_var=&dep, normal_vars=&corr_check_list, piece_vars= ); 
+data spearman_correlation_&x;
+	set spearman_correlation_&x;
+	cal_year_ind=&x;
+run;
+%END;
+
+data &outfile;
+	set spearman_correlation_:;
+run;
+
+%Mend Corr_Overtime;
+
+*** 9.6 Model Sampling t-test and define seed of sampling (Automatically)***;
+%Macro Model_Sampling (indata=,no_of_top_mkts=,sig_level=,insample_per=, test_var=&dep, outdata=,out_seed=,icss_seed=0);
+
+%let min_pvalue=0;
+%let rd_cnt=&icss_seed.;	
+%let row_cnt = %Eval(&no_of_top_mkts+1);
+
+%Do %Until(&min_pvalue>&sig_level);
+  %Let rd_cnt=%Eval(&rd_cnt+1);
+  data temp_mst;
+	  set &indata;
+	  if ranuni(&rd_cnt)<=&insample_per then insample=1;else insample=0;	
+  run;
+  
+proc means data = temp_mst;
+class mkt insample;
+var &test_var;
+weight &weight; 
+output out= temp_dep_dist (where=(insample^=.))
+mean()=;
+RUN;
+
+data temp_dep_dist;
+	set temp_dep_dist;
+	if mkt="" then mkt="ALL";
+run;
+
+proc sort data=temp_dep_dist;by mkt;run;
+
+proc sort data=temp_mst out=temp;by mkt;run;
+
+ods output Equality = temp_ttest_all;
+proc ttest data=temp;
+  class insample;
+  var &test_var;
+run;
+
+ods output Equality = temp_ttest_mkt;
+proc ttest data=temp;
+  by mkt;
+  class insample;
+  var &test_var;
+run;
+
+ods output close;
+
+data temp_ttest_all_mkt;
+	set temp_ttest_all (in=a)
+      temp_ttest_mkt (in=b)
+      ;
+  if (a) then mkt="ALL";
+run;
+
+data temp_sampling_rst;
+	merge  temp_dep_dist (in=a)
+	       temp_ttest_all_mkt (in=b keep=mkt ProbF)
+	       ;
+	by mkt;
+	if (a);
+run;
+
+proc sort data=temp_sampling_rst out=temp_sampling_rst_1;by mkt descending insample;run;
+proc sort data=temp_sampling_rst out=temp_sampling_rst_2;by descending insample descending _Freq_ ;run;
+	
+data top5_mkt_&rd_cnt;
+	set temp_sampling_rst_2 (obs=&row_cnt) end=end_ind;
+	retain min_pvalue 1;
+	min_pvalue= min(ProbF, min_pvalue);
+	if end_ind then do;
+		min_pvalue=round(min_pvalue, 0.001);
+		call symput("min_pvalue",min_pvalue); 
+	end;
+run;
+
+%End;
+
+data &out_seed;length sampling_seed 8.; sampling_seed = %Scan(&rd_cnt,1);run;
+data &outdata; set temp_sampling_rst (drop=_Type_ rename=(&test_var.=avg_test_var));run;
+
+%Mend;
+
+*** 9.7 Model Sampling t-test ***;
+%Macro Sampling_Ttest (indata=,insamp_ind=, outdata=);
+
+proc means data = &indata;
+class mkt insample;
+var &dep;
+weight &weight; 
+output out= temp_dep_dist (where=(insample^=.))
+mean()=;
+RUN;
+
+data temp_dep_dist;
+	set temp_dep_dist;
+	if mkt="" then mkt="ALL";
+run;
+
+proc sort data=temp_dep_dist;by mkt;run;
+
+proc sort data=&indata out=temp;by mkt;run;
+
+ods output Equality = temp_ttest_all;
+proc ttest data=temp;
+  class insample;
+  var &dep;
+run;
+
+ods output Equality = temp_ttest_mkt;
+proc ttest data=temp;
+  by mkt;
+  class insample;
+  var &dep;
+run;
+
+ods output close;
+
+data temp_ttest_all_mkt;
+	set temp_ttest_all (in=a)
+      temp_ttest_mkt (in=b)
+      ;
+  if (a) then mkt="ALL";
+run;
+
+data temp_sampling_rst;
+	merge  temp_dep_dist (in=a)
+	       temp_ttest_all_mkt (in=b keep=mkt ProbF)
+	       ;
+	by mkt;
+	if (a);
+run;
+
+data &outdata; set temp_sampling_rst (drop=_Type_ rename=(&dep.=avg_dep));run;
+
+%Mend;
+

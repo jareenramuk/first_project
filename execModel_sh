@@ -1,0 +1,10 @@
+#!/bin/bash
+
+taskID=$SGE_TASK_ID
+
+cd grid_$taskID/
+
+./runGBM.sh
+
+cd ..
+

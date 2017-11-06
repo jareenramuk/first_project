@@ -1,0 +1,1152 @@
+%macro illustrate_sensitivity_2013(
+/* Required Inputs*/
+	input_data           = ,	 	
+	dep_var              = ,
+	test_var	         = , 
+	ead                  = ,
+	ead_lgd              = ,
+       bal=,
+	cap_impact_as_of     = ,
+/*Optional inputs - see default settings*/
+	indep_vars           = month_ind test_var month_ind * test_var,
+	class_vars           = month_ind test_var,
+	by_vars              = ,
+	offset		         = ,
+	filter               = ,
+	link                 = probit,
+	pre_summarize_for_reg= no,
+	output_sensitivities = ,
+	output_data          = model_fit,
+	output_data_addl     = model_fit_addl,
+	output_data_add2     = model_fit_add2,
+	output_score         = scored,
+	output_sum           = summary,
+	selected_criterion   = "Log Likelihood"
+);
+*DY:  20150619. macro var assumed:
+		rd	(global, from EC_Seg)
+		cnt (global, from EC_Seg)
+		i 	(from segment_test_trigger)
+; %put _user_;
+
+* Identify numerator and denominator of the dep_var ratio;
+%local 
+	dep_var_numerator  
+	dep_var_denominator;
+%let dep_var_numerator = %scan(&dep_var.,1);
+%let dep_var_denominator = %scan(&dep_var.,2);
+%put
+	&dep_var_numerator. 
+	&dep_var_denominator.
+;
+
+* prepare dataset for regression modeling;
+data for_regression;
+set &input_data.;
+	%if not ("&filter." = "") %then %do;
+	where &filter.;
+	%end;
+	*test_var = &test_var.;
+	test_var = "" || &test_var.; *translate test variable into character format;
+run;
+
+
+%if not ("&by_vars." = "") %then %do;
+proc sort;
+by &by_vars.;
+run;
+%end;
+
+* Pre-summarize data if requested, keeping only the necessary variables;
+%if ("&pre_summarize_for_reg." = "yes") %then %do;
+proc summary data = for_regression nway noprint missing;
+var 
+	&dep_var_numerator.  
+	&dep_var_denominator.
+/***********Add ead_lgd , ead*/
+	&ead.
+	&ead_lgd.
+	&bal.
+;
+%if not ("&class_vars." = "") %then %do;
+class &class_vars.
+	%if not ("&offset." = "") %then %do;
+		offset = &offset.
+	%end;
+;
+%end;
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+output out = for_regression_small (drop = _FREQ_ _TYPE_)  sum=;
+run;
+
+data for_regression; 
+set for_regression_small;
+run;
+
+%end;
+
+*rsubmit;
+proc print data  = for_regression_small;
+run;
+
+
+
+*DY: 20150619. prepare to output summary file for time series def rate curves, for both summarize=yes and no scenarios;
+data ext.for_regression_&rd._&cnt._&i;
+ set for_regression;
+ format test_var_name $32.;
+ test_var_name = "&test_var.";
+run;
+
+*DY: 20150619. compute degrees of freedom for time component dynamically and store in a 
+ macro var to be used in segment_log_decision;
+%if &rd=1 %then %do;
+ods output NLevels = nLevelsMonthInd;
+
+title3 "Determine Nbr of Levels for month_ind";
+proc freq data=for_regression (keep = month_ind) NLEVELS; 
+tables month_ind /missing; 
+run;
+
+ods output close;
+
+%global nLevelsMonthInd;
+
+data _null_;
+ set nLevelsMonthInd;
+ call symputx ('nLevelsMonthInd',NLevels,G);
+run;
+
+%put nLevelsMonthInd=&nLevelsMonthInd;
+
+title3 " ";
+%end;
+
+****************************************************************************************;
+* Direct SAS regression output;
+* Other ODS table names considered: GoodnessOfFit LackFitChiSq FitStatistics;
+****************************************************************************************;
+ods output 
+	ModelFit 		= &output_data.
+%if not ("&output_sensitivities." = "") %then %do;
+	ParameterEstimates  = &output_sensitivities.
+%end;
+;
+
+proc genmod data = for_regression
+	desc;
+%if not ("&class_vars." = "") %then %do;
+class &class_vars.;
+%end;
+model &dep_var. = &indep_vars. / dist = bin link = &link. 
+	%if not ("&offset." = "") %then %do;
+		offset = &offset.
+	%end;
+;
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+output out = scored pred = pred_default_rate; 
+run;
+ods output close;
+
+data &output_data.;
+set &output_data.;
+	format test_var $100.;
+	test_var = "&test_var.";
+run;
+
+%if not ("&output_sensitivities." = "") %then %do;
+	data &output_sensitivities.;
+	set &output_sensitivities.;
+		format test_var $100.;
+		format ChiSq 20.2;
+		format Estimate	StdErr	LowerWaldCL	UpperWaldCL 20.4;
+
+		test_var = "&test_var.";
+	run;
+%end;
+
+
+data &output_score.;
+set &output_score.;
+%translate_predicted_score;
+run;
+
+* Summarize to the level of by and class variables;
+proc summary data = &output_score. nway noprint missing;
+var 
+	&dep_var_numerator.  
+	&dep_var_denominator.
+;
+%if not ("&class_vars." = "") %then %do;
+class &class_vars.;
+%end;
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+output out = &output_sum.(drop = _FREQ_ _TYPE_)  sum=;
+run;
+
+data &output_sum.;
+set &output_sum.;
+	dep_var 		= &dep_var.;
+	probit_dep_var	= probit(dep_var);
+run;
+
+*proc print data = &output_sum.(obs = 10);
+*run;
+
+* Aggregate over time for each value of class_var;
+proc means data = &output_sum. nway noprint missing;
+var 
+	probit_dep_var
+	&dep_var_numerator.
+	&dep_var_denominator.
+;
+class test_var;
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+output 
+	out = summary_temp12(drop = _FREQ_ _TYPE_)  
+	var(probit_dep_var)    		  = Rho_0
+	mean(probit_dep_var)          = ttc_dr
+	min(&dep_var_numerator.)      = min_&dep_var_numerator.
+	mean(&dep_var_numerator.)     = avg_&dep_var_numerator.
+	median(&dep_var_numerator.)   = med_&dep_var_numerator.
+	sum(&dep_var_numerator.)      = sum_&dep_var_numerator.
+
+	min(&dep_var_denominator.)    = min_&dep_var_denominator.
+	mean(&dep_var_denominator.)   = avg_&dep_var_denominator.
+	median(&dep_var_denominator.) = med_&dep_var_denominator.
+	sum(&dep_var_denominator.)    = sum_&dep_var_denominator.
+
+;
+run;
+
+* Aggregate across values of class_var;
+proc summary data = summary_temp12 nway noprint missing;
+var 
+	ttc_dr
+    Rho_0
+	min_&dep_var_numerator.
+	avg_&dep_var_numerator.
+	med_&dep_var_numerator.
+	sum_&dep_var_numerator.
+
+	min_&dep_var_denominator.
+	avg_&dep_var_denominator.
+	med_&dep_var_denominator.
+	sum_&dep_var_denominator.
+;
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+output 
+	out = summary_temp123(drop = _FREQ_ _TYPE_)
+
+	min(Rho_0)                     = min_Rho_0
+	min(ttc_dr)                    = min_ttc_dr
+	min(min_&dep_var_numerator.)   = min_min_&dep_var_numerator.
+	min(avg_&dep_var_numerator.)   = min_avg_&dep_var_numerator.
+	min(med_&dep_var_numerator.)   = min_med_&dep_var_numerator.
+
+	max(Rho_0)                     = max_Rho_0
+	max(ttc_dr)                    = max_ttc_dr
+	max(min_&dep_var_numerator.)   = max_min_&dep_var_numerator.
+	max(avg_&dep_var_numerator.)   = max_avg_&dep_var_numerator.
+	max(med_&dep_var_numerator.)   = max_med_&dep_var_numerator.
+;
+run;
+
+* Attach additional aggregate metrics to the regression output dataset containing sensitivities and ChiSq metrics;
+* This should be relevant for segmentation review, to understand whether adding segmentation is appropriate; 
+* Important to avoid many-to-many merge, so one of the dataset should be unique by by_vars;
+data &output_data_addl.; 
+merge 
+	summary_temp12	(rename = (test_var = test_var_value))
+	&output_data. 	(in = main where = (Criterion = &selected_criterion.))
+;*	summary_temp123
+;* ;
+
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+if main;
+run;
+
+******* Calculate Degree of Freedom --Jingnan ****;
+data summary_temp1234;
+	set &output_data_addl.;
+	cnt = 1;
+run;
+
+proc summary data = summary_temp1234 nway missing;
+	class &by_vars.;
+	output out = summary_temp1234 
+	sum(cnt)=Num_Class;
+run;
+data &output_data_add2.; 
+merge 
+	summary_temp1234  	
+	&output_data_addl. 	(in = main)
+;
+%if not ("&by_vars." = "") %then %do;
+by &by_vars.;
+%end;
+if main;
+run;
+ 
+%mend;
+
+* Sample execution;
+/*
+%macro translate_predicted_score;
+pred_defaults = pred_default_rate * accounts;
+%mend;
+
+
+%include "/idn/basel/pasha/ec_modeling/2013_Q4/code2013Q4.Asset_Correlation_Modeling_Macros.sas";
+libname new '/idn/ermg/pasha/economic_capital/modeling/uscs/2013_Q4/data/uscs';
+%illustrate_sensitivity_2013(
+	input_data  = new.uscs_summary_for_pivot,	 	
+	dep_var     = PD12m_combined / accounts,
+	test_var	= (bal_gp>0),
+	by_vars     = business_unit_cd portfolio_cd_new pd_bucket,
+	filter      = 200403<= month_ind <=201112 and ind_in_default = 0 and not(acct_ind_QRE_Account = 0 and business_unit_cd = '1' and portfolio_cd = "L")
+);
+
+%illustrate_sensitivity_2013(
+	input_data  = new.uscs_summary_for_pivot,	 	
+	dep_var     = PD12m_combined / accounts,
+	test_var	= bal_gp,
+	by_vars     = business_unit_cd portfolio_cd_new pd_bucket,
+	filter      = 200403<= month_ind <=201112 and ind_in_default = 0 and not(acct_ind_QRE_Account = 0 and business_unit_cd = '1' and portfolio_cd = "L"),
+	output_sensitivities = sensitivities,
+	pre_summarize_for_reg= yes
+);
+
+*
+%view_access(model_fit);
+*
+%view_access(model_fit_addl);
+*
+%view_access(scored);
+*
+%view_access(sensitivities);
+*/
+
+*DY. 20150707. added this helper macro which will be used in the segment_logic_decision macro.
+     it serves to dynamically create the necessary first-dot last-dot logic
+	 corresponding to the input byStatement
+;
+%macro createFirstLastDot(varlist=&byStatement);
+data _null_;
+ n_vars = countc("&varlist",' ')+1;
+ call symput('n_vars',compress(n_vars));
+run;
+
+%do i=1 %to &n_vars;
+ %let current_var = %scan(&varlist,&i);
+ 	%put i = &i; 	%put current_var = &current_var;
+	%if &i=1 %then %let flLogic= first.&current_var; 
+		%else %let flLogic= %sysfunc(catx(%str( ),&flLogic,first.&current_var ));
+	%if &i~=&n_vars %then %let flLogic= %sysfunc(catx(%str( ),&flLogic,or ));
+	%put flLogic= &flLogic;
+%end;
+
+%global firstLastDotCondition;
+%let firstLastDotCondition= %sysfunc(catx(%str( ),if ,&flLogic));
+%put firstLastDotCondition= &firstLastDotCondition;
+%mend createFirstLastDot;
+
+
+
+%macro segment_logic_decision(segLogDecByStatement  = &byStatement);
+*DY: 
+ 20150619. assumes the following macro vars:
+    nVars (global - from driver code)
+	nLevelsMonthInd (global - from illustrate_sensitivity_2013)
+; 
+
+
+
+
+*DY: 20150707. create the first-dot last-dot logic from the byStatement to be used in this macro;	
+%createFirstLastDot(varlist=&segLogDecByStatement);
+
+ 	data model_fit_&rd._&cnt.;
+    set ext.&Version._test_&rd._&cnt._1 - ext.&Version._test_&rd._&cnt._&num_test_var. ;
+    Level = &rd.;
+    cnt_segments = &cnt.;
+***********insert credit UL event rate here;
+	rho_unadjust = rho_0/(1+rho_0);
+    rho = max(0.005,rho_unadjust+(market_new ne "USCS")*0.005);
+	probit_ttc_dr = ttc_dr;
+	ttc_dr = probnorm(probit_ttc_dr);
+	ttc_pd = probnorm(probit_ttc_dr*sqrt(1-rho));
+	cul_event_rate = (probnorm((probit(max(0.000001,ttc_pd))+sqrt(rho)*probit(0.999))/sqrt(1-rho))-ttc_pd);
+
+    run;
+
+    
+    proc sort data = model_fit_&rd._&cnt.;
+    	by &segLogDecByStatement. ;
+    run;
+    
+
+
+	data ext.&Version._test_&rd._&cnt._triv_v1;
+	set ext.&Version._test_&rd._&cnt._triv;
+	***********insert credit UL event rate here;
+	rho_unadjust = rho_0/(1+rho_0);
+    rho = max(0.005,rho_unadjust+(market_new ne 'USCS')*0.005);
+	probit_ttc_dr = ttc_dr;
+	ttc_dr = probnorm(probit_ttc_dr);
+	ttc_pd = probnorm(probit_ttc_dr*sqrt(1-rho));
+	cul_event_rate = (probnorm((probit(max(0.000001,ttc_pd))+sqrt(rho)*probit(0.999))/sqrt(1-rho))-ttc_pd);
+    run;
+    
+
+
+    proc sort data = ext.&Version._test_&rd._&cnt._triv_v1;
+    	by &segLogDecByStatement. ;
+    run;
+
+
+	/*
+
+    data model_fit_&rd._&cnt.;
+    	merge model_fit_&rd._&cnt.(in=main)
+    				ext.&Version._test_&rd._&cnt._triv_v1
+					 (in=trivial keep = &segLogDecByStatement. Value rho cul_event_rate ttc_dr 
+                   rename = (Value = Trivial_likehood rho = rho_trivial cul_event_rate = cul_event_rate_trivial ttc_dr = ttc_dr_trivial));
+    	by &segLogDecByStatement. ;
+    	if main or trivial;
+        if  
+        if trivial and not main then do;
+                           test_var = "Trivial_Test";
+						   test_var_value = 0;
+						   Value = Trivial_likehood;
+						   cul_event_rate = cul_event_rate_trivial;
+                           rho  = rho_trivial;
+                           cul_event_rate = cul_event_rate_trivial;
+                           ttc_dr  = ttc_dr_trivial;
+					   end;	
+    	Diff_from_Trivial = Value - Trivial_likehood;
+    	Pct_Diff_from_Trivial = abs(Diff_from_Trivial/Trivial_likehood);
+    	Chi_Square = 2*Diff_from_Trivial;
+		cul_event_rate_Diff_from_Trivial = cul_event_rate - cul_event_rate_trivial;
+
+   ***************to be removed;
+	macro_veto = 0;
+
+******************;
+    run;
+*/
+
+    data model_fit_&rd._&cnt.;
+    	merge model_fit_&rd._&cnt.(in=main)
+    				ext.&Version._test_&rd._&cnt._triv_v1
+					 (in=trivial keep = &segLogDecByStatement. Value rho cul_event_rate ttc_dr ttc_pd 
+                   rename = (Value = Trivial_likehood rho = rho_trivial cul_event_rate = cul_event_rate_trivial ttc_dr = ttc_dr_trivial ttc_pd = ttc_pd_trivial));
+    	by &segLogDecByStatement. ;
+    	if main;
+    	Diff_from_Trivial = Value - Trivial_likehood;
+    	Pct_Diff_from_Trivial = abs(Diff_from_Trivial/Trivial_likehood);
+    	Chi_Square = 2*Diff_from_Trivial;
+		cul_event_rate_Diff_from_Trivial = cul_event_rate - cul_event_rate_trivial;
+    run;
+
+	    data model_fit_&rd._&cnt._triv;
+    	merge ext.&Version._test_&rd._&cnt._triv_v1(in=main)
+    				ext.&Version._test_&rd._&cnt._triv_v1
+					 (in=trivial keep = &segLogDecByStatement. Value rho cul_event_rate ttc_dr ttc_pd
+                   rename = (Value = Trivial_likehood rho = rho_trivial cul_event_rate = cul_event_rate_trivial ttc_dr = ttc_dr_trivial ttc_pd = ttc_pd_trivial));
+    	by &segLogDecByStatement. ;
+    	if main;
+    	Diff_from_Trivial = Value - Trivial_likehood;
+    	Pct_Diff_from_Trivial = abs(Diff_from_Trivial/Trivial_likehood);
+    	Chi_Square = 2*Diff_from_Trivial;
+		cul_event_rate_Diff_from_Trivial = cul_event_rate - cul_event_rate_trivial;
+    run;
+
+data  model_fit_&rd._&cnt.;
+set model_fit_&rd._&cnt. model_fit_&rd._&cnt._triv;
+run;
+
+    
+    data sensitivities_combined_&rd._&cnt.;
+    format Level1 Level2 $32.;
+	*DY. watchout: the files in the set statements were hardcoded but they are created by setting the illustrate_sensitivity_2013
+	 macro var output_sensitivities;
+    set ext.&Version._sensitivities_&rd._&cnt._1 - ext.&Version._sensitivities_&rd._&cnt._&num_test_var. ext.&Version._sensitivities_&rd._&cnt._triv ;
+    run;
+
+	*DY: 20150619. created combined for_reg file;
+	data for_regression_combined_&rd._&cnt.;
+	 set ext.for_regression_&rd._&cnt._1 - ext.for_regression_&rd._&cnt._&nVars;
+	run;
+
+    *rusbmit;
+
+    *rusbmit;
+    proc summary data = model_fit_&rd._&cnt. nway missing;
+    	class &segLogDecByStatement. Criterion test_var;
+    	var num_class Value Diff_from_Trivial min_PD12m_combined min_accounts;
+    	output out = ec01_seg_v0
+    	mean(num_class						) = num_class
+    	mean(Value    						) = Likelihood
+    	mean(Diff_from_Trivial    ) = Diff_from_Trivial
+    	mean(Pct_Diff_from_Trivial) = Pct_Diff_from_Trivial
+    	mean(Chi_Square           ) = Chi_Square
+    	min (min_PD12m_combined   ) = min_PD12m_combined
+
+    	;
+    run;
+
+
+
+	proc sort data = model_fit_&rd._&cnt. out = neer1; by &segLogDecByStatement. Criterion test_var ; run;
+    proc sort data = ec01_seg_v0 ; by &segLogDecByStatement. Criterion test_var ; run;
+
+
+data model_fit_&rd._&cnt._uer;
+merge neer1(in=a) ec01_seg_v0(in=b);
+by &segLogDecByStatement. Criterion test_var ;
+if a and b;
+if (in_sample_ind = 1 
+	    												and min_PD12m_combined>=&num_def 
+	    												and min_accounts>= &num_acct 
+	                                                    ) then first_veto = 0 ; else first_veto=1;
+
+run;
+
+
+proc summary data = model_fit_&rd._&cnt._uer nway missing min;
+class &segLogDecByStatement. Criterion test_var test_var_value _TYPE_ _FREQ_ Num_Class Value Diff_from_Trivial Pct_Diff_from_Trivial cul_event_rate_Diff_from_Trivial
+       Chi_Square cul_event_rate ttc_dr ttc_pd rho Trivial_likehood ttc_dr_trivial ttc_pd_trivial cul_event_rate_trivial rho_trivial first_veto;
+var min_PD12m_combined min_accounts;
+output out = temp1 min=;
+quit;
+
+
+
+
+*rsubmit;
+proc sort data = temp1 nodupkey out = a;
+by &segLogDecByStatement. test_var test_var_value;
+run;
+
+
+*rsubmit;
+proc sort data = for_regression_combined_&rd._&cnt. out = b;
+by &segLogDecByStatement test_var_name test_var;
+run;
+
+
+data model_fit_&rd._&cnt._uer2;
+merge a(in=a rename = (test_var = test_var_name test_var_value = test_var)) b(in=b rename = (MONTH_IND = proc_dt));
+if a or b;
+by &segLogDecByStatement. test_var_name test_var;
+run;
+
+proc sort data = model_fit_&rd._&cnt._uer2; by  &macroecon_group_by. ;run;
+
+*rsubmit;
+data model_fit_&rd._&cnt._uer3;
+merge macroecon_new(in=a) model_fit_&rd._&cnt._uer2(in=b);
+by &macroecon_group_by. ;
+if a and b;
+macro = ar_times_uer/uer_Ar;
+run;
+
+
+
+
+*rsubmit;
+proc sort data =   model_fit_&rd._&cnt._uer3;by  &segLogDecByStatement. test_var_name test_var proc_dt;run;
+
+proc summary data =  model_fit_&rd._&cnt._uer3 (where = (first_veto = 0)) nway missing;
+class &segLogDecByStatement. test_var_name test_var proc_dt;
+var PD12m_combined accounts ar_times_uer uer_Ar;
+output out = macro_sens sum=;
+run;
+
+data macro_sens;
+set macro_sens;
+macro = ar_times_uer/uer_Ar;
+run;
+
+
+*rsubmit;
+ods output 
+	ParameterEstimates   = m05_stepw_SelParmEst
+		RSquare              = m05_stepw_RSquare
+	ModelBuildingSummary = m05_stepw_SelectionSummary
+;
+
+*rsubmit;
+proc logistic data = macro_sens (where = (macro ne .));
+by  &segLogDecByStatement. test_var_name test_var;
+model PD12m_combined / accounts = macro / link = probit lackfit rsq ctable details; 
+run;
+
+ods output close;
+
+
+*rsubmit;
+data int;set m05_stepw_SelParmEst (where = (Variable = 'Intercept'));run;
+data macro ;set m05_stepw_SelParmEst (where = (Variable = 'macro'));run;
+
+
+proc sort data = int(rename =(Estimate = Estimate_int Variable = Variable_int StdErr = StdErr_int WaldChiSq = WaldChiSq_int ProbChiSq = ProbChiSq_int))  nodupkey ; 
+by &segLogDecByStatement. test_var_name test_var ;run;
+proc sort data = macro(rename =(Estimate = Estimate_macro Variable = Variable_macro StdErr = StdErr_macro WaldChiSq = WaldChiSq_macro ProbChiSq = ProbChiSq_macro))  nodupkey ;
+by &segLogDecByStatement. test_var_name test_var ;run;
+
+
+proc summary data =  model_fit_&rd._&cnt._uer3 (where = (first_veto = 0 and test_var_name = "Trivial_Test")) nway missing;
+class &segLogDecByStatement. test_var_name test_var proc_dt;
+var PD12m_combined accounts ar_times_uer uer_Ar;
+output out = macro_sens_t sum=;
+run;
+
+data macro_sens_t;
+set macro_sens_t;
+macro = ar_times_uer/uer_Ar;
+run;
+
+
+*rsubmit;
+ods output 
+	ParameterEstimates   = m06_stepw_SelParmEst
+		RSquare              = m06_stepw_RSquare
+	ModelBuildingSummary = m06_stepw_SelectionSummary
+;
+
+
+proc logistic data =  macro_sens_t(where = (macro ne .0));
+by &segLogDecByStatement. test_var_name test_var ;
+model PD12m_combined / accounts = macro / link = probit lackfit rsq ctable details; 
+run;
+
+ods output close;
+
+
+*rsubmit;
+data int_t;set m06_stepw_SelParmEst (where = (Variable = 'Intercept'));run;
+data macro_t ;set m06_stepw_SelParmEst (where = (Variable = 'macro'));run;
+
+
+proc sort data = int_t(rename =(Estimate = Estimate_int_t Variable = Variable_int_t StdErr = StdErr_int_t WaldChiSq = WaldChiSq_int_t ProbChiSq = ProbChiSq_int_t)); 
+by &segLogDecByStatement. test_var_name test_var ;run;
+proc sort data = macro_t(rename =(Estimate = Estimate_macro_t Variable = Variable_macro_t StdErr = StdErr_macro_t WaldChiSq = WaldChiSq_macro_t ProbChiSq = ProbChiSq_macro_t));
+by &segLogDecByStatement. test_var_name test_var  ;run;
+
+
+proc sort data = model_fit_&rd._&cnt._uer3; by &segLogDecByStatement. test_var_name test_var proc_dt;run;
+
+
+*rsubmit;
+data neer3;
+merge model_fit_&rd._&cnt._uer3(in=b) macro_t(in=e);
+if b;
+if not e then macro_veto_t = 0;
+by &segLogDecByStatement. test_var_name test_var ;
+run;
+
+proc sort data = neer3; by &segLogDecByStatement. test_var_name test_var;run;
+
+*rsubmit;
+data  model_fit_&rd._&cnt._uer4;
+merge neer3(in=b) macro (in=e);
+if e or b;
+match = e and b;
+by &segLogDecByStatement. test_var_name test_var;
+if not b or macro_veto_t = 0 then macro_veto=0;
+else if &macro_condition. then macro_veto = 1; else macro_veto = 0;
+undiv_cul_ttc = 1.2*cul_event_rate*&ead_lgd.;
+undiv_cul_ttc_trivial = 1.2*cul_event_rate_trivial*&ead_lgd.;
+undiv_cul_ttc_diff = 1.2*cul_event_rate_Diff_from_Trivial*&ead_lgd.;
+bad_var = (&bad_var.)*1;
+run;
+
+
+/*
+data  model_fit_&rd._&cnt._uer4;
+set model_fit_&rd._&cnt._uer3;
+macro_veto=0;
+undiv_cul_ttc = 1.2*cul_event_rate*&ead_lgd.;
+undiv_cul_ttc_trivial = 1.2*cul_event_rate_trivial*&ead_lgd.;
+undiv_cul_ttc_diff = 1.2*cul_event_rate_Diff_from_Trivial*&ead_lgd.;
+run;
+
+*/;
+*rsubmit;
+proc sort data = model_fit_&rd._&cnt._uer4 out = xyz1; by &segLogDecByStatement. test_var_name descending macro_veto; run;
+*rsubmit;
+proc sort data =  xyz1 nodupkey out = xyz2 (keep = &segLogDecByStatement. test_var_name macro_veto rename = (test_var_name=test_var)); by &segLogDecByStatement. test_var_name; run;
+
+*rusbmit;
+proc sort data = model_fit_&rd._&cnt.; by &segLogDecByStatement. test_var; run;
+
+
+data model_fit_&rd._&cnt.;
+merge model_fit_&rd._&cnt.(in=a) xyz2(in=b keep = macro_veto &segLogDecByStatement. test_var);
+by &segLogDecByStatement. test_var;
+if a; 
+run;
+
+
+
+************UER patch ends;
+
+    *rusbmit;
+    proc summary data = model_fit_&rd._&cnt. nway missing;
+    	class &segLogDecByStatement. Criterion test_var;
+    	var num_class Value Diff_from_Trivial min_PD12m_combined min_accounts;
+    	output out = ec01_seg
+    	mean(num_class						) = num_class
+    	mean(Value    						) = Likelihood
+    	mean(Diff_from_Trivial    ) = Diff_from_Trivial
+    	mean(Pct_Diff_from_Trivial) = Pct_Diff_from_Trivial
+    	mean(Chi_Square           ) = Chi_Square
+    	min (min_PD12m_combined   ) = min_PD12m_combined
+    	min (min_accounts				  ) = min_accounts
+        max(macro_veto) = macro_veto
+    	;
+    run;
+
+
+
+*rsubmit;
+    data ec01_seg;
+    	set ec01_seg;
+    	Degree_Freedom = %eval(&nLevelsMonthInd.-1)*(num_class - 1); *DY: 20150619;
+    	Avg_Chi_Square = Chi_Square/Degree_Freedom;
+    	P_Chi_Square = 1- PROBCHI(Chi_Square,Degree_Freedom);
+    	version = "&rd._&cnt.";  
+    	Manually_Select = 0;
+    	
+    	**** Manually Modification Applied ***;
+    	%Manual_Modify;
+    run;
+  *rsubmit;  
+    proc sort data = ec01_seg(keep = &segLogDecByStatement. Manually_Select
+    													rename = Manually_Select = Manually_decided
+    													where = (Manually_decided = 1 and in_sample_ind = 1 )) 
+    													nodupkey out = Manual_decided;
+    	by 	&segLogDecByStatement.;
+    run;
+      *rsubmit; 
+    proc sort data = ec01_seg;
+    	by &segLogDecByStatement. DESCENDING Likelihood;
+    run;
+    *rsubmit;
+    data ec01_seg;
+    	merge ec01_seg(in=a)
+    				Manual_decided(in=b keep = &segLogDecByStatement. Manually_decided);
+    	by 	&segLogDecByStatement. ;
+    	if b then Manually_decided = 1 ; else Manually_decided = 0;
+    run;   
+    *rsubmit;
+    data ec01_seg_decision_&rd._&cnt._deci;
+    	set ec01_seg(where = (Manually_Select = 1 and in_sample_ind = 1));
+    	version = "&rd._&cnt.";  
+    	Lv&lst_rd._seg_var_value = &lst_rd_seg_var_value;    	  	    
+    	Lv&lst_rd._seg_var			 = "&lst_rd_seg_var.";    	  	    
+    	Lv&lst_rd._seg_formula   = "&wh.";    	  	    
+    run;
+    
+
+
+
+
+    data  ec01_seg_decision_&rd._&cnt.;
+    	set ec01_seg(where = (Manually_decided = 0
+    												and in_sample_ind = 1 
+    												and num_class>1 
+    												and min_PD12m_combined>=&num_def 
+    												and min_accounts>= &num_acct 
+    												and Diff_from_Trivial>= &thrsh_imprv
+    												and P_Chi_Square <= &thrsh_P_Chi_Square
+    												and Pct_Diff_from_Trivial>= &thrsh_imprv_pct
+                                                    and macro_veto = 0));
+    	by 	&segLogDecByStatement.;
+		&firstLastDotCondition; 
+    	version = "&rd._&cnt.";  
+    	Lv&lst_rd._seg_var_value = &lst_rd_seg_var_value;    	  	    
+    	Lv&lst_rd._seg_var			 = "&lst_rd_seg_var.";    	  	    
+    	Lv&lst_rd._seg_formula   = "&wh.";    	  	    
+    run;
+
+proc sort data = ec01_seg out = ec01_seg_uer; by &segLogDecByStatement. Criterion test_var; run;
+	data ec01_seg_uer; 
+	set ec01_seg_uer; 
+	if (Manually_decided = 0
+	    												and in_sample_ind = 1 
+	    												and num_class > 1 
+	    												and min_PD12m_combined>=&num_def 
+	    												and min_accounts>= &num_acct 
+	    												and P_Chi_Square <= &thrsh_P_Chi_Square
+	    												and Pct_Diff_from_Trivial>= &thrsh_imprv_pct
+	                                                    ) then second_veto = 0 ; else second_veto=1;
+	if (Manually_decided = 0
+	    												and in_sample_ind = 1 
+	    												and num_class > 1 
+	    												and min_PD12m_combined>=&num_def 
+	    												and min_accounts>= &num_acct 
+	    												and Diff_from_Trivial>= &thrsh_imprv
+	    												and P_Chi_Square <= &thrsh_P_Chi_Square
+	    												and Pct_Diff_from_Trivial>= &thrsh_imprv_pct
+	                                                    ) then third_veto = 0 ; else third_veto = 1;
+	run;
+
+
+proc sort data =  model_fit_&rd._&cnt._uer4  ; by &segLogDecByStatement. test_var_name test_var;run;
+
+proc summary data = model_fit_&rd._&cnt._uer4 nway missing;
+class &segLogDecByStatement. test_var_name test_var;
+var PD12m_combined accounts;
+output out = neer5
+min(PD12m_combined) = PD12m_combined_min
+min(accounts)       = accounts_min;
+run;
+
+
+proc sort data = neer5; by &segLogDecByStatement. test_var_name test_var; run;
+
+
+data  model_fit_&rd._&cnt._comprehensive_v0;
+merge model_fit_&rd._&cnt._uer4(in=a) neer5(in=b);
+if a;
+by &segLogDecByStatement. test_var_name test_var;
+run;
+
+
+
+proc sort data =  model_fit_&rd._&cnt._comprehensive_v0 ; by &segLogDecByStatement. test_var_name;run;
+
+
+data  model_fit_&rd._&cnt._comprehensive;
+merge model_fit_&rd._&cnt._comprehensive_v0(in=b drop = macro_veto num_class Diff_from_Trivial Pct_Diff_from_Trivial Chi_Square min_PD12m_combined min_accounts) ec01_seg_uer 
+         (in=e rename = test_var = test_var_name);
+if e or b;
+match = e and b;
+by &segLogDecByStatement. test_var_name;
+if macro_veto = 0 and third_veto = 0 then third_lvl = 1 ;
+else if test_var_name = 'Trivial_Test' then third_lvl = 1;
+else third_lvl = 0;
+run;
+
+
+
+
+
+     
+    data ec01_seg_decision_&rd._&cnt.;
+    	set ec01_seg_decision_&rd._&cnt.
+    			ec01_seg_decision_&rd._&cnt._deci;
+    run;	 
+    
+    proc sort data = ec01_seg_decision_&rd._&cnt.;
+    	by &segLogDecByStatement. test_var;
+    run;
+    ods csv file="&tgt_dir/ec01_seg_decision_&rd._&cnt..csv";
+    proc print data=ec01_seg_decision_&rd._&cnt.;
+    run;
+    ods csv close;     
+    
+    proc sort data = model_fit_&rd._&cnt.(where = (in_sample_ind=1));
+    	by &segLogDecByStatement. test_var;
+    run;
+
+
+   proc sort data = model_fit_&rd._&cnt._uer4(where = (in_sample_ind=1));
+    	by &segLogDecByStatement. test_var_name test_var;
+    run;
+
+
+       
+		data ec02_seg_&rd._&cnt.;
+    	merge model_fit_&rd._&cnt.(in=main 
+							keep = &segLogDecByStatement 
+								/*portfolio_cd_new business_unit_cd pd_bucket*/ test_var test_var_value )	
+    				ec01_seg_decision_&rd._&cnt.(in=b 
+							keep = &segLogDecByStatement 
+								/*portfolio_cd_new business_unit_cd pd_bucket*/ test_var );
+    	by &segLogDecByStatement /*portfolio_cd_new business_unit_cd pd_bucket*/ test_var;
+    	if main and b;    	
+    	formula_nxt_rd = ("&wh." !! " and " !!test_var!!" ="!!test_var_value);
+    	version = "&rd._&cnt.";
+    	dummy = 1; 
+    run;
+    /*
+    proc sort data = ec02_seg_&rd._&cnt. nodupkey out = unique_test_var_&rd._&cnt.(keep = formula_nxt_rd dummy test_var_value test_var);
+    	by formula_nxt_rd;
+    run;
+    */
+    proc sort data = ec02_seg_&rd._&cnt. out = unique_test_var_&rd._&cnt.(keep = formula_nxt_rd dummy test_var_value test_var);
+    	by test_var test_var_value formula_nxt_rd;
+    run;
+    
+    %IF &cnt <= 1 %then %do;
+      data ext.unique_test_var_&rd.			; set unique_test_var_&rd._&cnt.; run;    
+      data ext.ec02_seg_&rd.				; set ec02_seg_&rd._&cnt.; run;
+      data ext.model_fit_&rd.				; set model_fit_&rd._&cnt.; run;
+	  data ext.model_fit_&rd._uer4			; set model_fit_&rd._&cnt._uer4; run;
+	  data ext.model_fit_&rd._comprehensive     ; set model_fit_&rd._&cnt._comprehensive;run;
+	  data ext.for_regression_combined_&rd.	; set for_regression_combined_&rd._&cnt.; run;
+      data ext.sensitivities_combined_&rd.	; set sensitivities_combined_&rd._&cnt.; run;
+      data ext.ec01_seg_decision_&rd.		; set ec01_seg_decision_&rd._&cnt.; run;
+    %end;    
+    %else %IF &cnt > 1 %then %do;    
+	  data ext.for_regression_&rd.			; set ext.for_regression_&rd._&cnt. 
+      data ext.unique_test_var_&rd.			; set ext.unique_test_var_&rd.(drop = cnt) unique_test_var_&rd._&cnt.; run;		
+      data ext.ec02_seg_&rd. 				; set ext.ec02_seg_&rd.  ec02_seg_&rd._&cnt. ; run;	
+      data ext.model_fit_&rd. 				; set ext.model_fit_&rd.  model_fit_&rd._&cnt. ; run;	
+	  data ext.model_fit_&rd._uer4 		    ; set ext.model_fit_&rd._uer4  model_fit_&rd._&cnt._uer4 ; run;	
+	  data ext.model_fit_&rd._comprehensive ; set ext.model_fit_&rd._comprehensive model_fit_&rd._&cnt._comprehensive;run;
+	  data ext.for_regression_combined_&rd.	; set ext.for_regression_combined_&rd. ext.for_regression_combined_&rd._&cnt.; run;
+      data ext.sensitivities_combined_&rd. 	; set ext.sensitivities_combined_&rd.  sensitivities_combined_&rd._&cnt. ; run;	
+      data ext.ec01_seg_decision_&rd. 		; set ext.ec01_seg_decision_&rd. ec01_seg_decision_&rd._&cnt.; run;	
+    %end;
+    
+    proc sort data = ext.unique_test_var_&rd. nodupkey;
+    	by formula_nxt_rd;
+    run;
+    
+    data ext.unique_test_var_&rd;
+    	set ext.unique_test_var_&rd.;
+    	by dummy;
+    	retain cnt;
+    	if first.dummy then cnt = 1;
+    	else cnt = cnt+1;
+    run; 
+
+	*DY: 20160619. Write out combined for_regression file for default rate time series pivot and model_fit file for testvar analysis;
+	proc export data = ext.for_regression_combined_&rd. outfile = "&tgt_dir/for_regression_combined_&rd..csv" DBMS=CSV REPLACE; run;
+	proc export data = ext.model_fit_&rd. 				outfile = "&tgt_dir/model_fit_&rd..csv" 			  DBMS=CSV REPLACE; run;
+
+	proc export data = ext.model_fit_&rd._uer4 				        outfile = "&tgt_dir/model_fit_&rd._uer4.csv" 			  DBMS=CSV REPLACE; run;
+	proc export data = ext.model_fit_&rd._comprehensive				outfile = "&tgt_dir/model_fit_&rd._comprehensive.csv" 			  DBMS=CSV REPLACE; run;
+
+    *rsubmit;
+	proc export data = ext.model_fit_1_comprehensive(where = (proc_dt = &cap_impact_as_of.))				outfile = "&tgt_dir/model_fit_1_comprehensive_dt..csv" 			  DBMS=CSV REPLACE; run;
+
+
+    proc summary data =ext.model_fit_&rd._comprehensive nway missing;
+    	class &segLogDecByStatement. proc_dt Criterion test_var_name;
+    	var num_class Value Diff_from_Trivial min_PD12m_combined min_accounts;
+    	output out = ext.model_fit_&rd._uer_sum
+    	mean(num_class						) = num_class
+    	mean(Value    						) = Likelihood
+    	mean(Diff_from_Trivial    ) = Diff_from_Trivial
+    	mean(Pct_Diff_from_Trivial) = Pct_Diff_from_Trivial
+    	mean(Chi_Square           ) = Chi_Square
+    	min (min_PD12m_combined   ) = min_PD12m_combined
+    	min (min_accounts				  ) = min_accounts
+		sum(uer_acctns) = uer_acctns
+		sum(accts_times_uer) = accts_times_uer
+		sum(uer_Ar) = uer_Ar
+        sum(ar_times_uer) = ar_times_uer
+
+        max(macro_veto) = macro_veto
+		max(first_veto) = first_veto
+		sum(newprob_EAD_trans) = newprob_EAD_trans
+		sum(newprob_EAD_trans) = newprob_EAD_trans
+		sum(undiv_cul_ttc) = undiv_cul_ttc
+		sum(undiv_cul_ttc_trivial) = undiv_cul_ttc_trivial
+		sum(undiv_cul_ttc_diff)  = undiv_cul_ttc_diff
+    	;
+    run;
+
+   *rsubmit;
+	proc export data = ext.model_fit_&rd._uer_sum				outfile = "&tgt_dir/model_fit_&rd._uer_sum.csv" 			  DBMS=CSV REPLACE; run;
+
+
+
+
+
+%mend segment_logic_decision;	
+
+%macro EC_Seg(Version = , wh_ini = , num_def = ,num_acct = ,thrsh_imprv = , thrsh_imprv_pct= ,thrsh_P_Chi_Square=, num_test_var = , start_rd = , end_rd = ,macro_condition=1=1);
+	
+		******** Initialize Second Level Split ****;
+	%if &start_rd = 1 %then %do;
+
+  %let rd = 1;     	
+  %let lst_rd = 0;     	
+  %let lst_rd_seg_var_value = 0;     	
+  %let lst_rd_seg_var = 'pd_bucket';     	
+  %let cnt = 0;     	
+  %let wh = 1=1;  
+
+  *rsubmit;
+/*
+proc sql;select count(distinct month_ind) into: nLevelsMonthInd from ext.for_regression_combined_1;quit;
+*/
+  	
+       %segment_test_trigger;  	
+	%segment_logic_decision;  	
+    proc sql noprint;
+     select count(*) into :nxt_num_seg_&rd.
+     from ext.unique_test_var_&rd ;
+    quit;	
+      
+    proc sort data = ext.ec01_seg_decision_&rd.;
+    	by portfolio_cd_new business_unit_cd pd_bucket;
+    run;  
+    data ext.ec02_seg_summary;
+    	set ext.ec01_seg_decision_&rd.(in=b keep = portfolio_cd_new business_unit_cd pd_bucket test_var Diff_from_Trivial Pct_Diff_from_Trivial Avg_Chi_Square version
+    																						 Likelihood 				 
+    															 rename = test_var = Lv&rd._seg_var
+    															 rename = Diff_from_Trivial = Lv&rd._Diff_from_Trivial
+    															 rename = Pct_Diff_from_Trivial = Lv&rd._Pct_Diff_from_Trivial
+    															 rename = Avg_Chi_Square = Lv&rd._Avg_Chi_Square
+    															 rename = version        = Lv&rd._version
+    															 rename = Likelihood     = Lv&rd._Likelihood
+    															 );
+    run;     
+    
+   ods csv file="&tgt_dir/ec02_seg_summary_&rd..csv";
+    proc print data=ext.ec02_seg_summary;
+    run;
+   ods csv close;     
+   
+   data ext.model_fit_all; set ext.model_fit_&rd.; run;
+   data ext.sensitivities_combined_all; set ext.sensitivities_combined_&rd.; run;
+   %end;
+	******** Loop Starting from Third Level ****;
+  %if &start_rd > 1 %then %do ;
+  %LET rd=%EVAL(&start_rd -1);	
+    proc sql noprint;
+     select count(*) into :nxt_num_seg_&rd.
+     from ext.unique_test_var_&rd ;
+    quit;	
+  %end;          
+  %DO %WHILE (&&nxt_num_seg_&rd.>0 and &rd < &end_rd);
+   %LET rd=%EVAL(&rd+1);  
+   %LET lst_rd=%EVAL(&rd-1);   
+   %Do cnt = 1 %To &&nxt_num_seg_&lst_rd.;
+     proc sql noprint;
+		 	select distinct
+		 		formula_nxt_rd
+		 	into :wh separated by " "
+		 	from ext.unique_test_var_&lst_rd.
+		 	where cnt = &cnt
+		 	;   	
+		quit; 
+		
+		proc sql noprint;
+		 	select distinct
+		 		test_var_value
+		 	into :lst_rd_seg_var_value separated by " "
+		 	from ext.unique_test_var_&lst_rd.
+		 	where cnt = &cnt
+		 	;   
+		
+		proc sql noprint;
+		 	select distinct
+		 		test_var
+		 	into :lst_rd_seg_var separated by " "
+		 	from ext.unique_test_var_&lst_rd.
+		 	where cnt = &cnt
+		 	;   		
+		quit; 
+		
+		*%segment_test_trigger;		
+		%segment_logic_decision;		
+
+    proc sql noprint;
+     select count(*) into :nxt_num_seg_&rd.
+     from ext.unique_test_var_&rd. ;
+    quit;	
+   %end;      
+  
+  %if &&nxt_num_seg_&rd. =0 %then %do;
+  data ext.ec02_seg_summary_final;
+   	set ext.ec02_seg_summary;
+  run;  
+  ods csv file="&tgt_dir/ec02_seg_summary_final.csv";
+   proc print data=ext.ec02_seg_summary_final;
+   run;
+  ods csv close;      
+  %end;
+    
+    %if  &rd = 2 %then %do;
+    proc sort data = ext.ec02_seg_summary;
+    	by portfolio_cd_new business_unit_cd pd_bucket Lv&lst_rd._seg_var ;
+    run;      
+    
+    proc sort data = ext.ec01_seg_decision_&rd.;
+    	by portfolio_cd_new business_unit_cd pd_bucket Lv&lst_rd._seg_var;
+    run;  
+    
+    data ext.ec02_seg_summary;
+    	merge ext.ec02_seg_summary			 (in=main)	
+    				ext.ec01_seg_decision_&rd.(in=b keep = portfolio_cd_new business_unit_cd pd_bucket test_var 
+    																					 Diff_from_Trivial Pct_Diff_from_Trivial Avg_Chi_Square 
+    																					 Lv&lst_rd._seg_var Lv&lst_rd._seg_var_value 
+    																					 Lv&lst_rd._seg_formula
+    																					 version
+    																					 Likelihood
+    															 rename = test_var = Lv&rd._seg_var
+    															 rename = Diff_from_Trivial = Lv&rd._Diff_from_Trivial
+    															 rename = Pct_Diff_from_Trivial = Lv&rd._Pct_Diff_from_Trivial
+    															 rename = Avg_Chi_Square = Lv&rd._Avg_Chi_Square
+    															 rename = version        = Lv&rd._version
+    															 rename = Likelihood     = Lv&rd._Likelihood
+    															 );
+    	by portfolio_cd_new business_unit_cd pd_bucket Lv&lst_rd._seg_var;
+    	if main;
+    	***if Lv&rd._seg_var ^= Lv&lst_rd._seg_var then Lv&rd._seg_var = "";
+    run;
+    %end; 
+    %else %do;
+    proc sort data = ext.ec02_seg_summary;
+    	by portfolio_cd_new business_unit_cd pd_bucket Lv&lst_rd._seg_var Lv&lst_rd._seg_var_value Lv&lst_rd._seg_formula;
+    run;      
+    
+    proc sort data = ext.ec01_seg_decision_&rd.;
+    	by portfolio_cd_new business_unit_cd pd_bucket Lv&lst_rd._seg_var Lv&lst_rd._seg_var_value Lv&lst_rd._seg_formula;
+    run;  
+    
+    data ext.ec02_seg_summary;
+    	merge ext.ec02_seg_summary			 (in=main)	
+    				ext.ec01_seg_decision_&rd.(in=b keep = portfolio_cd_new business_unit_cd pd_bucket test_var 
+    													   Diff_from_Trivial Pct_Diff_from_Trivial Avg_Chi_Square 
+    													   Lv&lst_rd._seg_var Lv&lst_rd._seg_var_value 
+    													   Lv&lst_rd._seg_formula
+    													   version
+    													   Likelihood
+    													   rename = test_var = Lv&rd._seg_var
+    													   rename = Diff_from_Trivial = Lv&rd._Diff_from_Trivial
+    													   rename = Pct_Diff_from_Trivial = Lv&rd._Pct_Diff_from_Trivial
+    													   rename = Avg_Chi_Square = Lv&rd._Avg_Chi_Square
+    													   rename = version        = Lv&rd._version
+    													   rename = Likelihood     = Lv&rd._Likelihood
+    										 );
+    	by portfolio_cd_new business_unit_cd pd_bucket Lv&lst_rd._seg_var Lv&lst_rd._seg_var_value Lv&lst_rd._seg_formula;
+    	if main;
+    	***if Lv&rd._seg_var ^= Lv&lst_rd._seg_var then Lv&rd._seg_var = "";
+    run;
+    %end; 
+      
+   ods csv file="&tgt_dir/ec02_seg_summary_&rd..csv";
+    proc print data=ext.ec02_seg_summary;
+    run; 
+    
+   ods csv close;    
+      data ext.model_fit_all	 					   ; set ext.model_fit_all  ext.model_fit_&rd. ; run;	
+      data ext.sensitivities_combined_all ; set ext.sensitivities_combined_all  ext.sensitivities_combined_&rd. ; run;
+
+  %END;
+       
+%mend EC_Seg;
+
+

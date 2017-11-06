@@ -1,0 +1,42 @@
+#!/bin/bash
+
+#rm -rf grid*
+
+echo "model,ntrees,depth,minnode" > BDLgridsummary.csv
+
+export PATH=$PATH:/idn/home/dklove/amex_python/bin
+export PYTHONPATH=$PYTHONPATH:/idn/home/dklove/amex_python/lib/python
+
+currpath=$(pwd)
+
+counter=1
+
+for ntrees in 200 300 500 800 1000
+#for ntrees in 500
+do
+	for depth in 3 5 7
+	#for depth in 7
+	do
+		for minnode in 200 500
+		#for minnode in 200
+		do
+			newpath=grid_${counter}
+			echo "$newpath,$ntrees,$depth,$minnode" >> $currpath/BDLgridsummary.csv
+			mkdir -p $currpath/$newpath
+			echo "#!/bin/bash" > $currpath/$newpath/runGBM.sh
+			echo "myPath=$currpath" >> $currpath/$newpath/runGBM.sh
+			echo "currPath=$currpath/$newpath" >> $currpath/$newpath/runGBM.sh
+			echo "ntrees=$ntrees" >> $currpath/$newpath/runGBM.sh
+			echo "depth=$depth" >> $currpath/$newpath/runGBM.sh
+			echo "minnode=$minnode" >> $currpath/$newpath/runGBM.sh
+			cat $currpath/runGBM.sh >> $currpath/$newpath/runGBM.sh
+			chmod +x $currpath/$newpath/runGBM.sh
+			cd $currpath/$newpath
+			#nohup qsub -cwd -sync y -l h_vmem=100G -l h_rss=100G ./runGBM.sh &
+			cd $currpath
+			counter=$[$counter+1]
+		done
+	done
+done
+
+nohup qsub -P dsm-prj -t 1-$counter -cwd -sync y -l h_vmem=100G -l h_rss=100G ./execModel.sh &

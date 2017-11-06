@@ -1,0 +1,117 @@
+#!/usr/bin/python2.7
+
+from __future__ import division
+import pandas as pd
+import os
+import time
+print('-----------------00---------------------')
+
+depVar = 'new_gamer_ind_2'
+
+modelList = pd.read_csv("BDLgridsummary.csv", header = 0)
+
+reportDF = None
+print('-----------------11---------------------')
+
+for row in modelList.iterrows():
+	giniFile = str(row[1][0]) + "/gini_dep_all.csv"
+	if os.path.isfile(giniFile):
+		tmpDF = pd.read_csv(giniFile)
+		tmpDF = tmpDF.ix[:, 0:]
+		tmpDF["model"] = row[1][0]
+		tmpDF["time"] = time.ctime(os.path.getmtime(giniFile))
+		if reportDF is None:
+			reportDF = tmpDF
+		else:
+			reportDF = pd.concat([reportDF, tmpDF])
+
+print('-----------------22---------------------')
+
+
+
+if reportDF is not None:
+	finalDF = pd.merge(modelList, reportDF, on = "model", how = "left")
+
+	finalDF = finalDF.sort_values("devGini", ascending = False).reset_index()
+
+	finalDF.to_csv("modelSelection.csv", header = True, index = False)
+
+	print "Total {0} out of {1} models are done.\n".format(reportDF.shape[0], modelList.shape[0])
+
+	print "The best model is:\n"
+
+	print finalDF.ix[0]
+
+else:
+	print "No model is available at this moment."
+
+print('-----------------33---------------------')
+print "Dep"
+
+
+modelList = pd.read_csv("BDLgridsummary.csv", header = 0)
+
+reportDF = None
+
+for row in modelList.iterrows():
+	giniFile = str(row[1][0]) + "/gini_dep_nondef.csv"
+        runGBMFile = str(row[1][0]) + "/runGBM.sh"
+	trainScoreFile = str(row[1][0]) + "/merged_train.csv"
+	testScoreFile = str(row[1][0]) + "/merged_test.csv"
+	ootScoreFile = str(row[1][0]) + "/merged_oot.csv"
+	if os.path.isfile(giniFile):
+		tmpDF = pd.read_csv(giniFile)
+		tmpDF = tmpDF.ix[:, 0:]
+		tmpDF["model"] = row[1][0]
+		tmpDF["begTime"] = time.ctime(os.path.getmtime(runGBMFile))
+		tmpDF["endTime"] = time.ctime(os.path.getmtime(giniFile))
+		tmpDF['runTimeInMin'] = int((os.path.getmtime(giniFile) - os.path.getmtime(runGBMFile))/60)
+		varimp = pd.read_csv(str(row[1][0]) + '/varimp.csv', header = 0)
+		tmpDF['nVars'] = varimp[varimp['imp'] > 0].shape[0]
+
+		trainScore = pd.read_csv(trainScoreFile, header = 0)
+		trainScore_s = trainScore.sort_values(by = 'pred', ascending = False)
+		train_capRt_1pct = trainScore_s.head(int(0.01 * trainScore_s.shape[0]))[depVar].sum()/trainScore_s[depVar].sum()
+		train_capRt_5pct = trainScore_s.head(int(0.05 * trainScore_s.shape[0]))[depVar].sum()/trainScore_s[depVar].sum()
+		tmpDF['train_capRt_1pct'] = '{:.2%}'.format(train_capRt_1pct)
+		tmpDF['train_capRt_5pct'] = '{:.2%}'.format(train_capRt_5pct)
+
+		testScore = pd.read_csv(testScoreFile, header = 0)
+		testScore_s = testScore.sort_values(by = 'pred', ascending = False)
+		test_capRt_1pct = testScore_s.head(int(0.01 * testScore_s.shape[0]))[depVar].sum()/testScore_s[depVar].sum()
+		test_capRt_5pct = testScore_s.head(int(0.05 * testScore_s.shape[0]))[depVar].sum()/testScore_s[depVar].sum()
+		tmpDF['test_capRt_1pct'] = '{:.2%}'.format(test_capRt_1pct)
+		tmpDF['test_capRt_5pct'] = '{:.2%}'.format(test_capRt_5pct)
+
+		ootScore = pd.read_csv(ootScoreFile, header = 0)
+		ootScore_s = ootScore.sort_values(by = 'pred', ascending = False)
+		oot_capRt_1pct = ootScore_s.head(int(0.01 * ootScore_s.shape[0]))[depVar].sum()/ootScore_s[depVar].sum()
+		oot_capRt_5pct = ootScore_s.head(int(0.05 * ootScore_s.shape[0]))[depVar].sum()/ootScore_s[depVar].sum()
+		tmpDF['oot_capRt_1pct'] = '{:.2%}'.format(oot_capRt_1pct)
+		tmpDF['oot_capRt_5pct'] = '{:.2%}'.format(oot_capRt_5pct)
+
+		if reportDF is None:
+			reportDF = tmpDF
+		else:
+			reportDF = pd.concat([reportDF, tmpDF])
+
+if reportDF is not None:
+	finalDF = pd.merge(modelList, reportDF, on = "model", how = "left")
+
+	finalDF = finalDF.sort_values("devGini", ascending = False).reset_index()
+
+	finalDF.to_csv("modelSelection_dep.csv", header = True, index = False)
+
+	print "Total {0} out of {1} models are done.\n".format(reportDF.shape[0], modelList.shape[0])
+
+	print "The best model is:\n"
+
+	print finalDF.ix[0]
+
+else:
+	print "No model is available at this moment."
+
+
+
+
+

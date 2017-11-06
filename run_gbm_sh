@@ -1,0 +1,24 @@
+minusNVars=99
+export PATH=$PATH:/idn/home/dklove/amex_python/bin
+#export PYTHONPATH=$PYTHONPATH:/idn/home/dklove/amex_python/lib/python
+export PYTHONPATH=/idn/home/dklove/old_amex_python/lib/python/:$PYTHONPATH
+/axp/rim/dsmml/dev/dklove/a/bin/python $myPath/zhunGBM.py \
+ 	--n_trees $ntrees --learning_rate 0.01 --depth $depth --minnode $minnode \
+	/axp/rim/dsmml/dev/nkuma44/gamer/20170420/data/gamer_train.csv \
+	/axp/rim/dsmml/dev/nkuma44/yang_production/combined_99/gamer_header_combined_${minusNVars}.csv  \
+	/axp/rim/dsmml/dev/nkuma44/gamer/20170420/data/gamer_test.csv \
+	/axp/rim/dsmml/dev/nkuma44/gamer/20170420/data/gamer_oot_prod.csv \
+	/axp/rim/dsmml/dev/nkuma44/gamer/20170420/data/gamer_sample.csv \
+	/axp/rim/dsmml/dev/nkuma44/gamer/20170420/data/gamer_sample.csv \
+	/axp/rim/dsmml/dev/nkuma44/gamer/20170420/data/gamer_sample.csv \
+	$currPath/varimp.csv \
+	$currPath/testscore.csv \
+	$currPath/ootscore.csv \
+	$currPath/trainallscore.csv \
+	$currPath/testallscore.csv \
+	$currPath/ootallscore.csv \
+
+cd $myPath 
+$myPath/modelSelection.py
+
+

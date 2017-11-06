@@ -1,0 +1,75 @@
+import os
+
+DESCRIPTION = 'MAND: Model-based Analysis of Novel Data'
+DISTNAME = 'mand'
+AUTHOR = 'Neeraj Kumar'
+AUTHOR_EMAIL = 'jseneeraj@gmail.com'
+MAINTAINER = 'Neeraj Kumar'
+MAINTAINER_EMAIL = 'jseneeraj@gmail.com'
+URL = ''
+LICENSE = ''
+DOWNLOAD_URL = ''
+version_file = os.path.join(os.path.realpath(os.path.dirname(__file__)), DISTNAME, 'version.py')
+with open(version_file) as f:
+    exec(f.next().strip())
+VERSION = __version__
+
+try:
+    from setuptools import setup
+    _has_setuptools = True
+except ImportError:
+    from distutils.core import setup
+    _has_setuptools = False
+
+def check_dependencies():
+    install_requires = []
+
+    # Just make sure dependencies exist, I haven't rigorously
+    # tested what the minimal versions that will work are
+    # (help on that would be awesome)
+    try:
+        import psutil
+    except ImportError:
+        install_requires.append('psutil')
+    try:
+        import numpy
+    except ImportError:
+        install_requires.append('numpy')
+    try:
+        import pandas
+    except ImportError:
+        install_requires.append('pandas')
+    try:
+        import matplotlib
+    except ImportError:
+        install_requires.append('matplotlib')
+
+    return install_requires
+
+
+if __name__ == "__main__":
+    install_requires = check_dependencies()
+
+    setup_args = {'name': DISTNAME
+                 ,'author': AUTHOR
+                 ,'author_email': AUTHOR_EMAIL
+                 ,'maintainer': MAINTAINER
+                 ,'maintainer_email': MAINTAINER_EMAIL
+                 ,'description': DESCRIPTION
+                 #,'long_description': LONG_DESCRIPTION
+                 ,'license': LICENSE
+                 ,'url': URL
+                 ,'version': VERSION
+                 ,'download_url': DOWNLOAD_URL
+                 ,'packages': ['mand']
+                 ,'package_data': {}
+                 ,'scripts': ['bin/mand']
+                 }
+    if _has_setuptools:
+        setup_args.update({'install_requires': install_requires
+                          ,'zip_safe': False
+                          })
+    else:
+        setup_args.update({'requires': install_requires})
+
+    setup(**setup_args)

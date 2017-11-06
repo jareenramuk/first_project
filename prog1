@@ -1,0 +1,568 @@
+%let key=;
+%let keyapp=;
+%let keycst =;
+*rsubmit;
+libname ntgt "";
+
+proc contents data = ntgt.balance_gamer_train;run;
+
+proc freq data = ntgt.balance_gamer_train;
+tables product_group_desc*intro_rate/list missing;
+run;
+
+*rsubmit;
+proc freq data = ntgt.balance_gamer_intro;
+tables intro_offer*intro_rate*intro_dur/list missing;
+run;
+
+
+
+*
+
+There is no easy way to identify accounts on introductory APR. One roundabout way you can adopt is matching fads data 
+to the gna_pricing table using appr_price_cd and appr_price_seq_nbr and using the below logic to check if there is an intro rate and 
+get the duration. Only AED and BCE (and Hilton, Starwood through some timeshare partner channels) have intro offers – 0% for 12m for 
+Prop NAA through non pre approved channels and 15/18m for pre screened channels.
+
+max(case when featr_typ = '3' and (prod_desc is not null or featr_dur_cnt > 0) then 1 else 0 end) as intro_offer,
+                                max(case when featr_typ = '3' then fixed_rt end) as intro_rate,
+                                max(case when featr_typ = '3' then featr_dur_cnt end) as intro_dur;
+
+
+
+
+
+
+
+
+proc means data = ntgt.balance_gamer_train n nmiss sum mean;var balance_gamer_2;run;
+proc means data = ntgt.balance_gamer_test n nmiss sum mean;var balance_gamer_2;run;
+proc means data = ntgt.balance_gamer_oot n nmiss sum mean;var balance_gamer_2;run;
+
+
+proc export data = ntgt.balance_gamer_oot;
+outfile="/idn/basel15/neeraj/gamer_dump/balance_gamer_exam.csv" replace;run;
+
+*rsubmit;
+data CLP_PROACTIVE;
+set tera.CLP_PROACTIVE;
+run;
+
+proc sort data = CLP_PROACTIVE nodupkey; by &key.;run;
+
+*rsubmit;
+proc contents data = ntgt.balance_gamer_intro;
+run;
+
+*rsubmit;
+%macro balance_gamer(sample=);
+/*
+proc sql;
+create table ntgt.balance_gamer_&sample. as
+select a.*,b.* from ntgt.gamer_&sample. as a
+inner join ntgt.gamer_&sample._added_vars as b on a.&key.=b.&key.
+inner join CLP_PROACTIVE as c on a.&key. = c.&key.;
+quit;
+
+data ntgt.balance_gamer_&sample.;
+set ntgt.balance_gamer_&sample.;
+if balance_gamer_2 = . then delete;
+run;
+*/
+proc sql;
+create table ntgt.balance_gamer_&sample. as
+select a.*,b.*,c.*,d.*,case when missing(d.&keyapp._nbr) then 1 else 0 end as nomatch from ntgt.gamer_&sample. as a
+inner join ntgt.gamer_&sample._added_vars as b on a.&key.=b.&key.
+inner join ntgt.balance_gamer_intro as c on a.&keyapp. = c.&keyapp.
+left join tera.gna_size_of_wallet as d on b.&keyapp.=d.&keyapp._nbr and b.&keyapp._dt = d.&keyapp._dt
+where c.intro_offer =1;
+quit;
+
+
+proc export data = ntgt.balance_gamer_&sample.(where=(portfolio_cd='L')) outfile="/idn/basel15/neeraj/gamer_dump/balance_gamer_&sample..csv" replace;run;
+
+%mend;
+%balance_gamer(sample=train);
+%balance_gamer(sample=test);
+%balance_gamer(sample=oot);
+*rsubmit;
+proc export data = ntgt.balance_gamer_train(obs=1 where=(portfolio_cd='L')) outfile="/idn/basel15/neeraj/gamer_dump/balance_gamer_ex.csv" replace;run;
+
+*rsubmit;
+proc means data = ntgt.balance_gamer_train n nmiss sum mean;var balance_gamer_2;run;
+proc means data = ntgt.balance_gamer_test n nmiss sum mean;var balance_gamer_2;run;
+proc means data = ntgt.balance_gamer_oot n nmiss sum mean;var balance_gamer_2;run;
+
+
+
+*rsubmit;
+proc standard data = ntgt.balance_gamer_train mean=0 std=1 replace out = balance_gamer_train_std;run;
+*rsubmit;proc means data = balance_gamer_train_std nmiss ;run;
+
+*rsubmit;
+PROC VARCLUS data =  balance_gamer_train_std MAXEIGEN = .7 OUTTREE=FORTREE MAXCLUSTERS=20; RUN;
+proc export data = FORTREE outfile="/idn/basel15/neeraj/gamer_dump/balance_clusters.csv" replace;run;
+
+
+
+*rsubmit;
+proc export data = ntgt.balance_gamer_train(obs=1000 where=(portfolio_cd='L')) outfile="/idn/basel15/neeraj/gamer_dump/balance_gamer_sample.csv" replace;run;
+proc export data = ntgt.balance_gamer_train(obs=1 where=(portfolio_cd='L')) outfile="/idn/basel15/neeraj/gamer_dump/balance_gamer_ex.csv" replace;run;
+*rsubmit;
+proc contents data = ntgt.balance_gamer_train noprint out = contents(keep=name type);run;
+*rsubmit;
+proc export data = contents outfile="/idn/basel15/neeraj/gamer_dump/balance_gamer_contents.csv" replace;run;
+
+*rsubmit;
+
+proc freq data = new ;
+tables class_var*customer*nomatch*balance_gamer_2/list missing;
+run;
+
+
+data new;
+set ntgt.balance_gamer_train(in=a);
+class_var = nomatch*2+customer*1;
+run;*rsubmit;
+
+
+
+%macro data_qc (
+	indat = new
+	,dep_var = new_gamer_ind_2
+	,class_var = class_var
+	,drop_vars = tk_inp_dt new_gamer_ind new_gamer_ind_ &keycst._id &keyapp. &key.
+	,out_num = num_report
+	,out_char = char_report
+	,out_var = var_report
+	,out_bin = bin_report
+);
+
+/*************************************/
+/***** Read input data ***************/
+/*************************************/
+	%put >>>>> READ INPUT DATA >>>>>;
+
+	%let dsid = %sysfunc(open(&indat));
+	%let nobs = %sysfunc(attrn(&dsid, nobs));
+	%let rc = %sysfunc(close(&dsid));
+	%if %sysevalf(&nobs > 0, boolean) %then %do;
+
+		proc sort data = &indat out =  _qc_dat_; by &class_var; run;
+
+		data _num_dat_ (drop = &drop_vars keep = _numeric_)
+			 _char_dat_ (drop = &drop_vars keep = _character_ _ID_)
+			 _key_dat_ (keep = &class_var &dep_var _ID_ );
+		set  _qc_dat_;
+			_ID_ = _N_;
+			output _num_dat_ _char_dat_ _key_dat_;
+		run;
+
+		proc sort data=_key_dat_ presorted; by _ID_; run;
+
+		ods select none;
+		ods output Mapping = _hpbin_;
+		proc hpbin data = _num_dat_ output=_num_rank_ pseudo_quantile;
+			input _all_;
+			ID _ID_;
+		run;
+		ods select all;
+
+		proc sort data=_num_rank_; by _ID_; run;
+		proc sort data=_num_dat_ presorted; by _ID_; run;
+		data _num_dat_; merge _num_dat_ _key_dat_; by _ID_; drop _ID_; run;
+		data _num_rank_; merge _num_rank_ _key_dat_; by _ID_; drop _ID_ BIN__ID_; run; 
+
+		proc sort data=_char_dat_ presorted; by _ID_; run;
+		data _char_dat_; merge _char_dat_ _key_dat_; by _ID_; drop _ID_; run;
+
+		proc sort data = _num_dat_ presorted; by &class_var; run;
+		proc sort data = _num_rank_ presorted; by &class_var; run;
+		proc sort data = _char_dat_ presorted; by &class_var; run;
+	%end;
+	%else %do;
+		%put >>>>> NO DATA! >>>>>;
+		%goto DONE;
+	%end;
+
+/*************************************/
+/***** Numeric Data Report ***********/
+/*************************************/
+	%put >>>>> NUMERIC DATA REPORT >>>>>;
+	%if &out_num ne %str() %then %do;
+
+		ods select none;
+		proc means data = _num_dat_ StackODSOutput n nmiss min p25 mean median p75 p95 p99 max stddev; 
+			class &class_var;
+			var _all_;
+			ods output summary = _stats_;
+		run;
+
+		proc freq data = _num_dat_ nlevels;
+			by &class_var;
+			tables _all_ / nocum missing;
+			ods output NLevels = _stats2_; 
+		run; 
+
+		proc sort data=_stats_; by variable &class_var; run;
+		proc sort data=_stats2_; by tablevar &class_var; run;
+
+		data _stats3_;
+		merge _stats_ _stats2_ (rename=(tablevar = variable));
+			by variable &class_var;
+			format var $100.;
+			var = variable;
+			if upcase(var) = compress(upcase("&class_var")) then delete;
+			pmiss = nmiss / sum(n, nmiss);
+			if n > 0 then pcard = nlevels / n;
+			else pcard = .;
+
+			rename n = count; 
+			rename stddev = sd;
+			rename nlevels = card;
+			drop NObs _control_ Variable NMissLevels NNonMissLevels;
+		run;
+
+		data _numrprt_;
+			&class_var = .;
+			format var $100.;
+			var = '';
+			count = .;
+			nmiss = .;
+			pmiss = .;
+			card = .;
+			pcard = .;
+			min = .;
+			p25 = .;
+			mean = .;
+			median = .;
+			p75 = .;
+			p95 = .;
+			p99 = .;
+			max = .;
+			sd = .;
+		run;
+
+		proc sort data=_stats3_; by var &class_var; run;
+		proc append base=_numrprt_ data=_stats3_ force; run;
+		data &out_num; set _numrprt_; if _N_ = 1 then delete; run;
+	%end;
+
+/*************************************/
+/***** Character Data Report *********/
+/*************************************/
+	%put >>>>> CHARACTER DATA REPORT >>>>>;
+	%if &out_char ne %str() %then %do;
+
+		ods select none;
+		proc freq data = _char_dat_ (drop=&dep_var) nlevels;
+			by &class_var;
+			tables _all_ / nopercent missing;
+			ods output NLevels = _statsn_; 
+			ods output onewayfreqs = _stats_;
+		run;
+		ods select all;
+
+		data _stats_;
+		length var $100. fvalue $100.;
+		set _stats_;
+			var = scan(table, -1);
+			fvalue = strip(vvaluex('F_'||var));
+			if upcase(var) = upcase("&class_var") then delete;
+			keep &class_var var fvalue frequency;
+		run;
+
+		proc sort data = _stats_;
+			by &class_var var descending frequency fvalue; 
+		run;
+
+		data _stats2_;
+		set _stats_;
+			by &class_var var;
+			retain count nmiss;
+			if first.var then do;
+				count = 0;
+				nmiss = 0;
+			end;
+			if missing(fvalue) then nmiss = sum(nmiss, frequency);
+			else count = sum (count, frequency);
+			if last.var then output;
+			keep &class_var var count nmiss;
+		run;
+
+		data _stats3_;
+		set _stats_ (where=(missing(fvalue)=0));
+			by &class_var var;
+			format mod1 $100. mod2 $100. mod3 $100.;
+			retain _rank_ mod1 count1 mod2 count2 mod3 count3;
+			if first.var then do;
+				_rank_ = 1; 
+				mod1 = ""; count1 = .; 
+				mod2 = ""; count2 = .; 
+				mod3 = ""; count3 = .;
+			end;
+			else _rank_ = sum(_rank_, 1);
+			if _rank_ = 1 then do; mod1 = fvalue; count1 = frequency; end;
+			if _rank_ = 2 then do; mod2 = fvalue; count2 = frequency; end;
+			if _rank_ = 3 then do; mod3 = fvalue; count3 = frequency; end;
+			if last.var then output;
+			keep &class_var var mod1 count1 mod2 count2 mod3 count3;
+		run;
+
+		data _statsn_;
+		set _statsn_;
+			rename TableVar = var;
+			rename NLevels = card;
+			keep &class_var TableVar NLevels;
+		run;
+
+		proc sort data=_statsn_; by &class_var var; run;
+
+		data _stats4_;
+		merge _stats2_ (in=A) _stats3_ _statsn_;
+			by &class_var var; if A;
+			pmiss = nmiss / sum(count, nmiss);
+			if count > 0 then do;
+				prob1 = count1 / count;
+				prob2 = count2 / count;
+				prob3 = count3 / count;
+			end;
+			else do;
+				prob1 = .;
+				prob2 = .;
+				prob3 = .;
+			end;
+		run;
+		
+		data _charrprt_;
+			&class_var = .;
+			format var $100.;
+			var = '';
+			count = .;
+			nmiss = .;
+			pmiss = .;
+			card = .;
+			format mod1 $100. mod2 $100. mod3 $100.;
+			mod1 = '';
+			mod2 = '';
+			mod3 = '';
+			count1 = .;
+			count2 = .;
+			count3 = .;
+			prob1 = .;
+			prob2 = .;
+			prob3 = .;
+		run;
+
+		proc sort data=_stats4_; by var &class_var; run;
+		proc append base=_charrprt_ data=_stats4_ force; run;
+		data &out_char; set _charrprt_; if _N_ = 1 then delete; run;
+	%end;
+
+/*************************************/
+/***** Var Selection Report **********/
+/*************************************/
+	%put >>>>> VARIABLE SELECTION REPORT >>>>>;
+	%if &out_var ne %str() %then %do;
+
+		ods select none;
+		proc freq data = _num_rank_;
+			by &class_var;
+			tables _all_ / nopercent missing;
+			ods output onewayfreqs = _cohen_n_;
+		run;
+
+		proc freq data = _num_rank_;
+			by &class_var;
+			tables _all_ / nopercent missing;
+			ods output onewayfreqs = _cohen_n1_;
+			weight &dep_var;
+		run;
+
+		proc freq data = _char_dat_ (drop=&dep_var);
+			by &class_var;
+			tables _all_ / nopercent missing;
+			ods output onewayfreqs = _cohen_c_;
+		run;
+
+		proc freq data = _char_dat_;
+			by &class_var;
+			tables _all_ / nopercent missing;
+			ods output onewayfreqs = _cohen_c1_;
+			weight &dep_var;
+		run;
+		ods select all;
+
+		data _cohen_;
+		length var $100. fvalue $100.;
+		set _cohen_n_ (in=_A1_) 
+			_cohen_c_ (in=_B1_) 
+			_cohen_n1_ (in=_C1_)
+			_cohen_c1_ (in=_D1_);
+			var_typ = (_A1_ + _C1_) + 2 * (_B1_ + _D1_);
+			var = scan(table, -1);
+			fvalue = strip(vvaluex('F_'||var));
+			if upcase(var) = upcase("BIN_&class_var") then delete;
+			if upcase(var) = upcase("BIN_&dep_var") then delete;
+			if upcase(var) = upcase("&class_var") then delete;
+			if upcase(var) = upcase("&dep_var") then delete;
+			if _A1_ or _C1_ then var = substr(var,5);
+			if _C1_ or _D1_ then dep_flag = 1; else dep_flag = 0;
+			keep &class_var var_typ var fvalue frequency dep_flag;
+		run;
+
+		proc sql;
+		create table _stats_ as
+			select	&class_var, var_typ, var, fvalue,
+					max(case when dep_flag = 0 then frequency else 0 end) as freq,
+					max(case when dep_flag = 1 then frequency else 0 end) as dfreq
+			from 	_cohen_
+			group	by &class_var, var_typ, var, fvalue;
+
+		create table _stats2_ as
+			select	&class_var, var, 
+					sum(freq) as cfreq,
+					sum(dfreq)/sum(freq) as pde,
+					-1* coalesce (calculated pde * log(calculated pde) 
+						+ (1-calculated pde) * log(1-calculated pde), 0) as h_pde
+			from 	_stats_ 
+			group	by &class_var, var;
+
+		create table _stats3_ as
+			select	a.*, b.cfreq, b.h_pde,
+					dfreq/freq as pfv,
+					freq/cfreq as pcl,
+					-1* coalesce (calculated pfv * log(calculated pfv) 
+						+ (1-calculated pfv) * log(1-calculated pfv), 0) as h_pfv,
+					-1* coalesce (calculated pcl * log(calculated pcl), 0) as h_pcl,
+					freq * calculated h_pfv / cfreq as wgt_h_pfv
+			from 	_stats_ a left outer join _stats2_ b
+			on		a.&class_var = b.&class_var and a.var = b.var;
+
+		create table _stats4_ as
+			select	&class_var, var_typ, var, h_pde,
+					count(pfv) as bin_size,
+					sum(h_pcl) as var_h,
+					h_pde - sum(wgt_h_pfv) as var_ig,
+					calculated var_ig / calculated var_h as var_igr
+			from 	_stats3_
+			group	by &class_var, var_typ, var, h_pde;
+
+		create table _stats5_ as
+			select	var_typ, var, fvalue,
+					min(pfv) as minv,
+					max(pfv) as maxv,
+					abs(2*arsin(sqrt(calculated maxv))-2*arsin(sqrt(calculated minv))) as class_cohen
+			from	_stats3_
+			group	by var_typ, var, fvalue;
+			
+		create table _stats6_ as
+			select	a.var_typ, a.var,
+					min(b.h_pde) as min_dep_ent,
+					max(b.h_pde) as max_dep_ent,
+					min(a.class_cohen) as min_var_cohen,
+					max(a.class_cohen) as max_var_cohen,
+					min(b.bin_size) as min_var_bin,
+					max(b.bin_size) as max_var_bin,
+					min(b.var_h) as min_var_ent,
+					max(b.var_h) as max_var_ent,
+					min(b.var_ig) as min_var_ig,
+					max(b.var_ig) as max_var_ig,
+					min(b.var_igr) as min_var_igr,
+					max(b.var_igr) as max_var_igr
+			from	_stats5_ a left outer join _stats4_ b
+			on		a.var_typ = b.var_typ and a.var = b.var
+			group	by a.var_typ, a.var
+			order	by a.var_typ, a.var;
+		quit;
+
+		data _cohenrprt_; 
+			format var $100.;
+			var_typ = .;
+			var = '';
+			min_dep_ent = .;
+			max_dep_ent = .;
+			min_var_cohen = .;
+			max_var_cohen = .;
+			min_var_bin = .;
+			max_var_bin = .;
+			min_var_ent = .;
+			max_var_ent = .;
+			min_var_ig = .;
+			max_var_ig = .;
+			min_var_igr = .;
+			max_var_igr = .;
+		run;
+
+		proc append base=_cohenrprt_ data=_stats6_ force; run;
+		data &out_var; set _cohenrprt_; if _N_ = 1 then delete; run;
+		proc sort data=&out_var; by var_typ descending var; run;
+	%end;
+
+	%if &out_bin ne %str() %then %do;
+		data _stats2_;
+		set _stats_;
+			if var_typ = 1 then bin = input(fvalue, 8.);
+			keep &class_var var_typ var fvalue bin freq dfreq;
+		run;
+
+		proc sort data=_stats2_; by var bin; run;
+		proc sort data=_hpbin_; by variable bin; run;
+
+		data &out_bin (rename = (Bin = nBin fvalue = bin));
+		merge _stats2_ (in=A rename = (var = variable)) _hpbin_ (in=B);
+			by variable bin; if A;
+			Proportion = dfreq/freq;
+			drop BinnedVariable Frequency;
+		run;
+
+		proc sort data = &out_bin; by &class_var var_typ variable nbin bin; run;
+	%end;
+	
+	proc datasets library = work;
+		delete 	_qc_dat_ _num_dat_ _num_rank_ _char_dat_ _key_dat_ _hpbin_
+				_numrprt_ _charrprt_ _cohenrprt_ _cohen_ _cohen_c_ _cohen_c1_ _cohen_n_ _cohen_n1_ 
+				_stats_ _stats2_ _stats3_ _stats4_ _stats5_ _stats6_ _statsn_ 
+		;
+	quit; 
+	%DONE:
+%mend data_qc;
+
+
+*rsubmit;
+%data_qc (
+     indat = new
+     ,dep_var = balance_gamer_2
+     ,class_var = class_var
+     ,drop_vars =  &keyapp.
+&keyapp._nbr
+PVAR1
+home_postal_cd
+email_addr
+ip_addr
+home_postal_cd5
+postal_cd
+city_desc
+org_nm
+isp_nm
+sensitivity_attribute1_ratio
+sensitivity_attribute2_ratio
+sensitivity_attribute3_ratio
+sensitivity_attribute4_ratio
+sensitivity_attribute5_ratio
+sensitivity_attribute6_ratio
+
+
+     ,out_num = ntgt.num_report_bg1
+     ,out_char = ntgt.char_report_bg1
+     ,out_var = ntgt.var_report_bg1
+     ,out_bin = ntgt.bin_report_bg1
+);*rsubmit;
+
+
+
+*rsubmit;
+proc export data = ntgt.num_report_bg1 outfile = "/idn/basel15/neeraj/gamer_dump/num_report_bg.csv" replace ; run;
+proc export data = ntgt.char_report_bg1 outfile = "/idn/basel15/neeraj/gamer_dump/char_report_bg.csv" replace ; run;
+proc export data = ntgt.var_report_bg1 outfile = "/idn/basel15/neeraj/gamer_dump/var_report_bg.csv" replace ; run;
+proc export data = ntgt.bin_report_bg1 outfile = "/idn/basel15/neeraj/gamer_dump/bin_report_bg.csv" replace ; run;
